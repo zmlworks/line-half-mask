@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>行の半分マスク</title>
+  <style>
+    body {
+      font: 16px/1.4 sans-serif;
+      margin: 0;
+      padding: 12px;
+      width: 228px;
+      background: #f6f4ef;
+      color: #222;
+    }
+    body.has-shortcuts {
+      width: 260px;
+    }
+    h1 {
+      font-size: 15px;
+      margin: 0 0 10px;
+      font-weight: 700;
+    }
+    h2 {
+      font-size: 13px;
+      margin: 14px 0 8px;
+      font-weight: 700;
+    }
+    button {
+      display: block;
+      width: 100%;
+      margin: 0 0 8px;
+      padding: 10px 8px;
+      font-size: 15px;
+      border: 1px solid #bbb;
+      border-radius: 6px;
+      background: #fff;
+      color: #111;
+    }
+    button:active {
+      background: #eee;
+    }
+    #toggle.on {
+      background: #111;
+      color: #fff;
+      border-color: #111;
+    }
+    .note, .err {
+      font-size: 12px;
+      color: #555;
+      margin: 4px 0 0;
+    }
+    .err {
+      color: #a40000;
+    }
+    .shortcut {
+      display: block;
+      margin: 0 0 8px;
+    }
+    .shortcut span {
+      display: block;
+      font-size: 12px;
+      margin: 0 0 3px;
+    }
+    .shortcut input {
+      box-sizing: border-box;
+      width: 100%;
+      padding: 8px 8px;
+      font-size: 14px;
+      border: 1px solid #bbb;
+      border-radius: 6px;
+      background: #fff;
+      color: #111;
+    }
+    .shortcut input:focus {
+      outline: 2px solid #222;
+      outline-offset: 1px;
+    }
+    #shortcut-reset {
+      font-size: 14px;
+      padding: 8px;
+    }
+  </style>
+</head>
+<body>
+  <h1>行の半分マスク</h1>
+  <button id="toggle" type="button">オンにする</button>
+  <button id="swap" type="button">塗りを入れ替え</button>
+  <p id="status" class="note"></p>
+  <section id="shortcuts" hidden>
+    <h2>ショートカット</h2>
+    <label class="shortcut">
+      <span>マスクのオンオフ</span>
+      <input id="shortcut-toggle" type="text" readonly spellcheck="false" autocomplete="off">
+    </label>
+    <label class="shortcut">
+      <span>塗りを入れ替え</span>
+      <input id="shortcut-swap" type="text" readonly spellcheck="false" autocomplete="off">
+    </label>
+    <button id="shortcut-reset" type="button">既定に戻す</button>
+    <p id="shortcut-msg" class="note"></p>
+  </section>
+  <script src="shortcuts.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>
