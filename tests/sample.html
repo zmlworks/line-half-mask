@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>行の半分マスク 検証用</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: #ffffff;
+      color: #111111;
+    }
+    body {
+      padding: 32px 48px;
+    }
+    article {
+      width: min(640px, 100%);
+      box-sizing: border-box;
+    }
+    h1, p, li {
+      font-family: "Noto Sans CJK JP", "Noto Sans CJK", "Noto Sans", sans-serif;
+      font-weight: 400;
+      margin: 0 0 28px 0;
+      padding: 0;
+    }
+    h1 {
+      font-size: 28px;
+      line-height: 40px;
+    }
+    p, li {
+      font-size: 24px;
+      line-height: 40px;
+    }
+    ul {
+      margin: 0;
+      padding: 0 0 0 1.5em;
+    }
+    @media (max-width: 480px) {
+      body {
+        padding: 16px;
+      }
+      h1 {
+        font-size: 22px;
+        line-height: 32px;
+      }
+      p, li {
+        font-size: 18px;
+        line-height: 30px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <article>
+    <h1 id="h1">行の半分マスク 検証ページ</h1>
+    <p id="p-one">一行だけの短い段落です。</p>
+    <p id="p-ja">日本語の段落です。この文は意図して長くしてあり、決まった幅では複数の行に折り返されます。奇数行の下半分と偶数行の上半分が黒く塗られることを、行の真ん中の位置と照らして確認します。入れ替えると、塗られる半分が逆になります。段落をまたいでも行の番号は通しです。さらに文を足して、行数を安定させます。最終行も含めて見比べられるように、ここにもう一文置いておきます。</p>
+    <p id="p-en">This English paragraph is also long enough to wrap onto several visual lines at this width and font size. The add-on should cover the bottom half of odd lines and the top half of even lines, counting continuously down the page. After a parity swap, each line should show the opposite half. Additional sentences keep the line count stable for automated checks and screenshots, so the last line can be compared as well.</p>
+    <p id="p-mix">混合の段落です。The two languages can sit in one block. 行の番号はページ全体で通しなので、直前の段落の行数を引き継ぎます。This helps confirm that parity continues across paragraphs rather than restarting. まだ行が足りなければ、この文で増やします。</p>
+    <ul>
+      <li id="li1">リスト項目も通し番号の続きです。この項目も折り返して複数行になるように、説明の文を少し長めに書きます。日本語と English を混ぜても、同じ行の箱はひとつにまとまるはずです。</li>
+    </ul>
+  </article>
+</body>
+</html>

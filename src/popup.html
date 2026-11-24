@@ -53,16 +53,16 @@
     .err {
       color: #a40000;
     }
-    .shortcut {
+    .shortcut, .ratio {
       display: block;
       margin: 0 0 8px;
     }
-    .shortcut span {
+    .shortcut span, .ratio span {
       display: block;
       font-size: 12px;
       margin: 0 0 3px;
     }
-    .shortcut input {
+    .shortcut input, .ratio input {
       box-sizing: border-box;
       width: 100%;
       padding: 8px 8px;
@@ -72,7 +72,7 @@
       background: #fff;
       color: #111;
     }
-    .shortcut input:focus {
+    .shortcut input:focus, .ratio input:focus {
       outline: 2px solid #222;
       outline-offset: 1px;
     }
@@ -87,6 +87,11 @@
   <button id="toggle" type="button">オンにする</button>
   <button id="swap" type="button">塗りを入れ替え</button>
   <p id="status" class="note"></p>
+  <label class="ratio">
+    <span>マスクの割合（パーセント）</span>
+    <input id="ratio" type="number" min="50" max="90" step="1" value="50">
+  </label>
+  <p class="note">50 から 90 までの整数です。</p>
   <section id="shortcuts" hidden>
     <h2>ショートカット</h2>
     <label class="shortcut">

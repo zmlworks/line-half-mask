@@ -19,10 +19,19 @@ async function currentTabId() {
   return tabs[0] && tabs[0].id;
 }
 
-async function send(type) {
+async function send(type, extra) {
   const id = await currentTabId();
   if (!id) throw new Error("no tab");
-  return api.tabs.sendMessage(id, { type });
+  const msg = Object.assign({ type }, extra || {});
+  return api.tabs.sendMessage(id, msg);
+}
+
+function clampRatio(v) {
+  const n = Math.round(Number(v));
+  if (!Number.isFinite(n)) return 50;
+  if (n < 50) return 50;
+  if (n > 90) return 90;
+  return n;
 }
 
 function showState(state) {
@@ -167,5 +176,40 @@ async function setupShortcuts() {
   }
 }
 
+const ratioInput = document.getElementById("ratio");
+
+async function loadRatio() {
+  let v = 50;
+  try {
+    if (api.storage && api.storage.local) {
+      const res = await api.storage.local.get("ratio");
+      if (res && res.ratio != null) v = clampRatio(res.ratio);
+    }
+  } catch (_) {}
+  ratioInput.value = String(v);
+}
+
+async function commitRatio() {
+  const v = clampRatio(ratioInput.value);
+  ratioInput.value = String(v);
+  try {
+    if (api.storage && api.storage.local) await api.storage.local.set({ ratio: v });
+  } catch (_) {}
+  try {
+    await send("setRatio", { ratio: v });
+  } catch (_) {}
+}
+
+ratioInput.addEventListener("change", commitRatio);
+ratioInput.addEventListener("blur", commitRatio);
+ratioInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    commitRatio();
+    ratioInput.blur();
+  }
+});
+
 refresh().catch(showError);
 setupShortcuts();
+loadRatio();

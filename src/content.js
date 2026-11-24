@@ -4,8 +4,15 @@
 (() => {
   const api = typeof browser !== "undefined" ? browser : typeof chrome !== "undefined" ? chrome : null;
   const ROOT_ID = "line-half-mask-root";
-  const COLOR = "#000";
   const Z = "2147483647";
+  // 45度の縞（黒1px＋白1px）。勾配方向 2px が1周期。約 3px/s。
+  // 流れは canvas を毎フレーム描き直す。CSS アニメや clip-path 内の transform、
+  // background-position は Firefox で再描画されないことがある。OS の動きを減らす設定も無視する。
+  const STRIPE_PERIOD = 2;
+  const STRIPE_SPEED = 3;
+  const RATIO_MIN = 50;
+  const RATIO_MAX = 90;
+  const RATIO_DEFAULT = 50;
   const TAP_MOVE = 40;
   const TAP_MS = 600;
   const TWO_TAP_MS = 500;
@@ -22,10 +29,34 @@
   let updating = false;
   let tap = null;
   let lastTwoTapAt = 0;
+  let ratio = RATIO_DEFAULT;
+  let flowRaf = 0;
+  let flowT0 = 0;
+  let flowPausedMs = 0;
+  let flowPausedAt = 0;
+  let flowPaused = false;
+  let lastMasks = [];
+
+  function clampRatio(v) {
+    const n = Math.round(Number(v));
+    if (!Number.isFinite(n)) return RATIO_DEFAULT;
+    if (n < RATIO_MIN) return RATIO_MIN;
+    if (n > RATIO_MAX) return RATIO_MAX;
+    return n;
+  }
 
   function reportState() {
     if (!api || !api.runtime || !api.runtime.sendMessage) return;
-    try { api.runtime.sendMessage({ type: "state", on, parity }); } catch (_) {}
+    try { api.runtime.sendMessage({ type: "state", on, parity, ratio }); } catch (_) {}
+  }
+
+  function setRatio(v) {
+    const next = clampRatio(v);
+    if (next === ratio) return next;
+    ratio = next;
+    if (on) update();
+    reportState();
+    return ratio;
   }
 
   function toggle() {
@@ -46,6 +77,7 @@
     on = true;
     ensureRoot();
     update();
+    startFlow();
     window.addEventListener("scroll", schedule, { capture: true, passive: true });
     window.addEventListener("resize", schedule, { capture: true, passive: true });
     for (const target of [window, document]) {
@@ -61,6 +93,7 @@
 
   function stop() {
     on = false;
+    stopFlow();
     tap = null;
     window.removeEventListener("scroll", schedule, { capture: true });
     window.removeEventListener("resize", schedule, { capture: true });
@@ -73,6 +106,7 @@
     }
     if (mo) { mo.disconnect(); mo = null; }
     if (root) { root.remove(); root = null; }
+    lastMasks = [];
     reportState();
   }
 
@@ -179,18 +213,149 @@
     });
   }
 
+  function sizeCanvas() {
+    const dpr = window.devicePixelRatio || 1;
+    const cssW = Math.max(1, innerWidth);
+    const cssH = Math.max(1, innerHeight);
+    const w = Math.max(1, Math.round(cssW * dpr));
+    const h = Math.max(1, Math.round(cssH * dpr));
+    if (root.width !== w || root.height !== h) {
+      root.width = w;
+      root.height = h;
+    }
+    root.style.width = cssW + "px";
+    root.style.height = cssH + "px";
+    root.style.left = "0px";
+    root.style.top = "0px";
+  }
+
   function ensureRoot() {
-    if (root && root.isConnected) return;
+    if (root && root.isConnected && root.tagName === "CANVAS") return;
+    if (root) root.remove();
     root = document.getElementById(ROOT_ID);
-    if (!root) {
-      root = document.createElement("div");
+    if (!root || root.tagName !== "CANVAS") {
+      if (root) root.remove();
+      root = document.createElement("canvas");
       root.id = ROOT_ID;
       root.setAttribute("aria-hidden", "true");
     }
     root.style.cssText =
-      "position:fixed;inset:0;width:100%;height:100%;overflow:hidden;" +
+      "position:fixed;left:0;top:0;right:auto;bottom:auto;" +
       "pointer-events:none;z-index:" + Z + ";margin:0;padding:0;border:none;";
     (document.documentElement || document.body).appendChild(root);
+    sizeCanvas();
+  }
+
+  // getClientRects は CSS zoom 後の座標。canvas の描画面は zoom 前の
+  // レイアウト座標なので、親の zoom で見た表示サイズとの比で割る。
+  function clientScale() {
+    if (!root) return 1;
+    const shown = root.getBoundingClientRect().width;
+    const local = root.offsetWidth || innerWidth;
+    const s = shown / local;
+    return s > 0 && Number.isFinite(s) ? s : 1;
+  }
+
+  function applyClips(masks) {
+    lastMasks = masks;
+    applyFlow(performance.now());
+  }
+
+  function drawStripes(c, d) {
+    // 回転の中心は原点（ビューポート左上）なので、塗りの範囲は
+    // 各マスクの幅・高さではなく、画面全体を覆う大きさにする。
+    // 以前は pad = width+height だったため、斜めの塗りが途中で切れ、
+    // 下の行ほど短く見え、ページ下部はほとんど塗られなかった。
+    if (!lastMasks.length) return;
+    const s = clientScale();
+    c.save();
+    c.imageSmoothingEnabled = false;
+    c.beginPath();
+    for (let i = 0; i < lastMasks.length; i++) {
+      const m = lastMasks[i];
+      if (m.width <= 0 || m.height <= 0) continue;
+      c.rect(m.left / s, m.top / s, m.width / s, m.height / s);
+    }
+    c.clip();
+    c.translate(d, d);
+    c.rotate(-Math.PI / 4);
+    const pad = innerWidth + innerHeight + 32;
+    const x0 = -pad;
+    const y0 = -pad;
+    const w = pad * 2;
+    const h = pad * 2;
+    c.fillStyle = "#000";
+    c.fillRect(x0, y0, w, h);
+    c.fillStyle = "#fff";
+    const yStart = Math.floor(y0 / STRIPE_PERIOD) * STRIPE_PERIOD + 1;
+    for (let y = yStart; y < y0 + h; y += STRIPE_PERIOD) {
+      c.fillRect(x0, y, w, 1);
+    }
+    c.restore();
+  }
+
+  function flowElapsed(now) {
+    return Math.max(0, now - flowT0 - flowPausedMs);
+  }
+
+  function applyFlow(now) {
+    if (!root) return;
+    sizeCanvas();
+    const dpr = window.devicePixelRatio || 1;
+    const c = root.getContext("2d", { alpha: true });
+    c.setTransform(dpr, 0, 0, dpr, 0, 0);
+    c.clearRect(0, 0, innerWidth, innerHeight);
+    if (!lastMasks.length) return;
+    const along = (flowElapsed(now) / 1000) * STRIPE_SPEED;
+    const d = ((along % STRIPE_PERIOD) + STRIPE_PERIOD) % STRIPE_PERIOD / Math.SQRT2;
+    drawStripes(c, d);
+  }
+
+  function flowTick(now) {
+    flowRaf = 0;
+    if (!on || flowPaused) return;
+    applyFlow(now);
+    flowRaf = requestAnimationFrame(flowTick);
+  }
+
+  function startFlow() {
+    if (!root) return;
+    if (!flowT0) {
+      flowT0 = performance.now();
+      flowPausedMs = 0;
+    }
+    if (flowPaused) {
+      flowPausedMs += performance.now() - flowPausedAt;
+      flowPaused = false;
+    }
+    if (!flowRaf) flowRaf = requestAnimationFrame(flowTick);
+  }
+
+  function stopFlow() {
+    if (flowRaf) {
+      cancelAnimationFrame(flowRaf);
+      flowRaf = 0;
+    }
+    flowT0 = 0;
+    flowPausedMs = 0;
+    flowPausedAt = 0;
+    flowPaused = false;
+  }
+
+  function pause(paused) {
+    if (paused) {
+      if (flowPaused) return;
+      flowPaused = true;
+      flowPausedAt = performance.now();
+      if (flowRaf) {
+        cancelAnimationFrame(flowRaf);
+        flowRaf = 0;
+      }
+      applyFlow(flowPausedAt);
+      return;
+    }
+    if (!on) return;
+    startFlow();
   }
 
   function isSkippedElement(el) {
@@ -305,10 +470,11 @@
     const masks = [];
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
-      const mid = (line.top + line.bottom) / 2;
+      const h = line.bottom - line.top;
+      const frac = ratio / 100;
       const coverTop = coverTopForIndex(i);
-      const top = coverTop ? line.top : mid;
-      const bottom = coverTop ? mid : line.bottom;
+      const top = coverTop ? line.top : line.top + h * (1 - frac);
+      const bottom = coverTop ? line.top + h * frac : line.bottom;
       const clip = ancestorClip(line.el);
       const t = Math.max(top, clip.top);
       const bm = Math.min(bottom, clip.bottom);
@@ -325,15 +491,7 @@
     updating = true;
     try {
       ensureRoot();
-      const masks = collect();
-      root.textContent = "";
-      for (const m of masks) {
-        const el = document.createElement("div");
-        el.style.cssText =
-          "position:absolute;background:" + COLOR + ";pointer-events:none;margin:0;padding:0;border:none;" +
-          "top:" + m.top + "px;left:" + m.left + "px;width:" + m.width + "px;height:" + m.height + "px;";
-        root.appendChild(el);
-      }
+      applyClips(collect());
     } finally {
       updating = false;
     }
@@ -344,7 +502,10 @@
       if (!msg || !msg.type) return;
       if (msg.type === "toggle") toggle();
       else if (msg.type === "swap") swap();
-      else if (msg.type === "state") return Promise.resolve({ on, parity });
+      else if (msg.type === "setRatio") {
+        setRatio(msg.ratio);
+        return Promise.resolve({ on, parity, ratio });
+      } else if (msg.type === "state") return Promise.resolve({ on, parity, ratio });
     });
   }
 
@@ -355,8 +516,29 @@
     start,
     stop,
     update,
-    getState() { return { on, parity }; },
+    getState() { return { on, parity, ratio, flowPaused }; },
     collect,
     collectLines,
+    pause,
+    setRatio,
+    clampRatio,
   };
+
+  function bindStorage() {
+    if (!api || !api.storage || !api.storage.local) return;
+    try {
+      api.storage.local.get("ratio").then((res) => {
+        if (res && res.ratio != null) setRatio(res.ratio);
+      }).catch(() => {});
+    } catch (_) {}
+    if (api.storage.onChanged) {
+      api.storage.onChanged.addListener((changes, area) => {
+        if (area && area !== "local") return;
+        if (changes && Object.prototype.hasOwnProperty.call(changes, "ratio")) {
+          setRatio(changes.ratio && changes.ratio.newValue);
+        }
+      });
+    }
+  }
+  bindStorage();
 })();
