@@ -210,6 +210,82 @@ ratioInput.addEventListener("keydown", (e) => {
   }
 });
 
+const widthInput = document.getElementById("stripe-width");
+const speedInput = document.getElementById("stripe-speed");
+const angleInput = document.getElementById("random-angle");
+const dirInput = document.getElementById("random-dir");
+
+function clampWidth(v) {
+  const n = Math.round(Number(v));
+  if (!Number.isFinite(n)) return 8;
+  if (n < 1) return 1;
+  if (n > 16) return 16;
+  return n;
+}
+
+function clampSpeed(v) {
+  const n = Math.round(Number(v));
+  if (!Number.isFinite(n)) return 30;
+  if (n < 0) return 0;
+  if (n > 60) return 60;
+  return n;
+}
+
+async function loadStripe() {
+  let width = 8, speed = 30, randomAngle = false, randomDir = false;
+  try {
+    if (api.storage && api.storage.local) {
+      const res = await api.storage.local.get(["stripeWidth", "stripeSpeed", "randomAngle", "randomDir"]);
+      if (res) {
+        if (res.stripeWidth != null) width = clampWidth(res.stripeWidth);
+        if (res.stripeSpeed != null) speed = clampSpeed(res.stripeSpeed);
+        randomAngle = !!res.randomAngle;
+        randomDir = !!res.randomDir;
+      }
+    }
+  } catch (_) {}
+  widthInput.value = String(width);
+  speedInput.value = String(speed);
+  angleInput.checked = randomAngle;
+  dirInput.checked = randomDir;
+}
+
+async function commitStripe() {
+  const prefs = {
+    stripeWidth: clampWidth(widthInput.value),
+    stripeSpeed: clampSpeed(speedInput.value),
+    randomAngle: !!angleInput.checked,
+    randomDir: !!dirInput.checked,
+  };
+  widthInput.value = String(prefs.stripeWidth);
+  speedInput.value = String(prefs.stripeSpeed);
+  try {
+    if (api.storage && api.storage.local) await api.storage.local.set(prefs);
+  } catch (_) {}
+  try {
+    await send("setStripe", prefs);
+  } catch (_) {}
+}
+
+function bindStripeField(el, evs) {
+  for (const ev of evs) el.addEventListener(ev, commitStripe);
+}
+
+bindStripeField(widthInput, ["change", "blur"]);
+bindStripeField(speedInput, ["change", "blur"]);
+angleInput.addEventListener("change", commitStripe);
+dirInput.addEventListener("change", commitStripe);
+for (const el of [widthInput, speedInput]) {
+  el.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      commitStripe();
+      el.blur();
+    }
+  });
+}
+
 refresh().catch(showError);
 setupShortcuts();
 loadRatio();
+loadStripe();

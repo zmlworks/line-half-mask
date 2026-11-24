@@ -2,15 +2,20 @@
 // 通常 (parity=0): 奇数行の下半分と偶数行の上半分。
 // 入れ替え (parity=1): その逆（1行目の上半分も含む）。
 (() => {
+  if (globalThis.__lineHalfMask) return;
   const api = typeof browser !== "undefined" ? browser : typeof chrome !== "undefined" ? chrome : null;
   const ROOT_ID = "line-half-mask-root";
   const Z = "2147483647";
-  // 45度の縞（黒8px＋白8px）。勾配方向 16px が1周期。約 30px/s。
-  // 流れは canvas を毎フレーム描き直す。CSS アニメや clip-path 内の transform、
-  // background-position は Firefox で再描画されないことがある。OS の動きを減らす設定も無視する。
-  const STRIPE_BAR = 8;
-  const STRIPE_PERIOD = 16;
-  const STRIPE_SPEED = 30;
+  // 既定は 45度の縞（黒8px＋白8px）、速さ約 30px/s。幅と速さはポップアップで変えられる。
+  // 流れは canvas を毎フレーム描き直す。OS の動きを減らす設定は無視する。
+  const WIDTH_MIN = 1;
+  const WIDTH_MAX = 16;
+  const WIDTH_DEFAULT = 8;
+  const SPEED_MIN = 0;
+  const SPEED_MAX = 60;
+  const SPEED_DEFAULT = 30;
+  const DEFAULT_STRIPE_ANGLE = -Math.PI / 4;
+  const DEFAULT_FLOW_ANGLE = Math.PI / 4;
   const SEL_SWAP_MS = 3000;
   const RATIO_MIN = 50;
   const RATIO_MAX = 90;
@@ -46,6 +51,13 @@
   let touchBound = false;
   let clickBound = false;
   let fakeTimers = null;
+  let capturedRanges = [];
+  let stripeWidth = WIDTH_DEFAULT;
+  let stripeSpeed = SPEED_DEFAULT;
+  let randomAngle = false;
+  let randomDir = false;
+  let stripeAngle = DEFAULT_STRIPE_ANGLE;
+  let flowAngle = DEFAULT_FLOW_ANGLE;
 
   function clampRatio(v) {
     const n = Math.round(Number(v));
@@ -55,9 +67,64 @@
     return n;
   }
 
+  function clampWidth(v) {
+    const n = Math.round(Number(v));
+    if (!Number.isFinite(n)) return WIDTH_DEFAULT;
+    if (n < WIDTH_MIN) return WIDTH_MIN;
+    if (n > WIDTH_MAX) return WIDTH_MAX;
+    return n;
+  }
+
+  function clampSpeed(v) {
+    const n = Math.round(Number(v));
+    if (!Number.isFinite(n)) return SPEED_DEFAULT;
+    if (n < SPEED_MIN) return SPEED_MIN;
+    if (n > SPEED_MAX) return SPEED_MAX;
+    return n;
+  }
+
+  function toBool(v) { return v === true || v === "true" || v === 1 || v === "1"; }
+
+  function stripePeriod() { return stripeWidth * 2; }
+
+  function rollStripeStyle() {
+    stripeAngle = randomAngle ? Math.random() * Math.PI : DEFAULT_STRIPE_ANGLE;
+    flowAngle = randomDir ? Math.random() * Math.PI * 2 : DEFAULT_FLOW_ANGLE;
+  }
+
+  function applyStripePrefs(prefs, reroll) {
+    if (!prefs) prefs = {};
+    let changed = false;
+    if (Object.prototype.hasOwnProperty.call(prefs, "stripeWidth")) {
+      const w = clampWidth(prefs.stripeWidth);
+      if (w !== stripeWidth) { stripeWidth = w; changed = true; }
+    }
+    if (Object.prototype.hasOwnProperty.call(prefs, "stripeSpeed")) {
+      const s = clampSpeed(prefs.stripeSpeed);
+      if (s !== stripeSpeed) { stripeSpeed = s; changed = true; }
+    }
+    if (Object.prototype.hasOwnProperty.call(prefs, "randomAngle")) {
+      const v = toBool(prefs.randomAngle);
+      if (v !== randomAngle) { randomAngle = v; changed = true; reroll = true; }
+    }
+    if (Object.prototype.hasOwnProperty.call(prefs, "randomDir")) {
+      const v = toBool(prefs.randomDir);
+      if (v !== randomDir) { randomDir = v; changed = true; reroll = true; }
+    }
+    if (reroll) rollStripeStyle();
+    if ((changed || reroll) && (on || selectionOn)) update();
+    if (changed) reportState();
+  }
+
   function reportState() {
     if (!api || !api.runtime || !api.runtime.sendMessage) return;
-    try { api.runtime.sendMessage({ type: "state", on, parity, ratio, selectionOn, selParity }); } catch (_) {}
+    try {
+      api.runtime.sendMessage({
+        type: "state",
+        on, parity, ratio, selectionOn, selParity,
+        stripeWidth, stripeSpeed, randomAngle, randomDir
+      });
+    } catch (_) {}
   }
 
   function currentTime() {
@@ -118,6 +185,7 @@
   }
 
   function swap() {
+    rollStripeStyle();
     if (selectionOn) {
       selParity = selParity ? 0 : 1;
       update();
@@ -184,6 +252,7 @@
   function start() {
     if (on) return;
     on = true;
+    rollStripeStyle();
     bindSharedListeners();
     bindTouch();
     if (!selectionOn) {
@@ -374,8 +443,14 @@
       c.rect(m.left / s, m.top / s, m.width / s, m.height / s);
     }
     c.clip();
-    c.translate(d, d);
-    c.rotate(-Math.PI / 4);
+    // 進行方向のうち、縞の周期軸への射影だけを進めて折り返す。
+    // 縞に沿った成分は見た目が変わらないので、飛びのない周期送りになる。
+    const period = stripePeriod();
+    const ax = -Math.sin(stripeAngle);
+    const ay = Math.cos(stripeAngle);
+    const wrapped = ((d % period) + period) % period;
+    c.translate(wrapped * ax, wrapped * ay);
+    c.rotate(stripeAngle);
     const pad = innerWidth + innerHeight + 32;
     const x0 = -pad;
     const y0 = -pad;
@@ -384,9 +459,9 @@
     c.fillStyle = "#000";
     c.fillRect(x0, y0, w, h);
     c.fillStyle = "#fff";
-    const yStart = Math.floor(y0 / STRIPE_PERIOD) * STRIPE_PERIOD + STRIPE_BAR;
-    for (let y = yStart; y < y0 + h; y += STRIPE_PERIOD) {
-      c.fillRect(x0, y, w, STRIPE_BAR);
+    const yStart = Math.floor(y0 / period) * period + stripeWidth;
+    for (let y = yStart; y < y0 + h; y += period) {
+      c.fillRect(x0, y, w, stripeWidth);
     }
     c.restore();
   }
@@ -403,8 +478,12 @@
     c.setTransform(dpr, 0, 0, dpr, 0, 0);
     c.clearRect(0, 0, innerWidth, innerHeight);
     if (!lastMasks.length) return;
-    const along = (flowElapsed(now) / 1000) * STRIPE_SPEED;
-    const d = ((along % STRIPE_PERIOD) + STRIPE_PERIOD) % STRIPE_PERIOD / Math.SQRT2;
+    const along = (flowElapsed(now) / 1000) * stripeSpeed;
+    const ax = -Math.sin(stripeAngle);
+    const ay = Math.cos(stripeAngle);
+    const fx = Math.cos(flowAngle);
+    const fy = Math.sin(flowAngle);
+    const d = along * (fx * ax + fy * ay);
     drawStripes(c, d);
   }
 
@@ -655,6 +734,7 @@
     selTimer = scheduleInterval(() => {
       if (!selectionOn) return;
       selParity = selParity ? 0 : 1;
+      rollStripeStyle();
       update();
     }, SEL_SWAP_MS);
   }
@@ -666,19 +746,48 @@
     }
   }
 
-  function maskSelection() {
-    const sel = window.getSelection && window.getSelection();
+  function cloneSelectionRanges(sel) {
     const ranges = [];
-    if (sel) {
-      for (let i = 0; i < sel.rangeCount; i++) {
-        const r = sel.getRangeAt(i);
-        if (r && !r.collapsed) ranges.push(r.cloneRange());
+    if (!sel) return ranges;
+    for (let i = 0; i < sel.rangeCount; i++) {
+      const r = sel.getRangeAt(i);
+      if (r && !r.collapsed) {
+        try { ranges.push(r.cloneRange()); } catch (_) {}
       }
     }
+    return ranges;
+  }
+
+  function captureSelection() {
+    const ranges = cloneSelectionRanges(window.getSelection && window.getSelection());
+    if (ranges.length) capturedRanges = ranges;
+    return ranges;
+  }
+
+  function rangesForMask() {
+    const live = cloneSelectionRanges(window.getSelection && window.getSelection());
+    if (live.length) return live;
+    const saved = [];
+    for (let i = 0; i < capturedRanges.length; i++) {
+      const r = capturedRanges[i];
+      if (!r) continue;
+      try {
+        if (r.collapsed) continue;
+        saved.push(r.cloneRange());
+      } catch (_) {
+        if (r && !r.collapsed) saved.push(r);
+      }
+    }
+    return saved;
+  }
+
+  function maskSelection() {
+    const ranges = rangesForMask();
     if (!ranges.length) return false;
     selRanges = ranges;
     selectionOn = true;
     selParity = 0;
+    rollStripeStyle();
     bindSharedListeners();
     bindClickExit();
     startSelTimer();
@@ -722,12 +831,23 @@
       if (msg.type === "toggle") toggle();
       else if (msg.type === "swap") swap();
       else if (msg.type === "maskSelection") {
-        maskSelection();
-        return Promise.resolve({ on, parity, ratio, selectionOn, selParity });
+        const ok = maskSelection();
+        return Promise.resolve({ ok, on, parity, ratio, selectionOn, selParity });
       } else if (msg.type === "setRatio") {
         setRatio(msg.ratio);
         return Promise.resolve({ on, parity, ratio, selectionOn, selParity });
-      } else if (msg.type === "state") return Promise.resolve({ on, parity, ratio, selectionOn, selParity });
+      } else if (msg.type === "setStripe") {
+        applyStripePrefs(msg, false);
+        return Promise.resolve({
+          on, parity, ratio, selectionOn, selParity,
+          stripeWidth, stripeSpeed, randomAngle, randomDir, stripeAngle, flowAngle
+        });
+      } else if (msg.type === "state") {
+        return Promise.resolve({
+          on, parity, ratio, selectionOn, selParity,
+          stripeWidth, stripeSpeed, randomAngle, randomDir
+        });
+      }
     });
   }
 
@@ -738,36 +858,71 @@
     start,
     stop,
     update,
-    getState() { return { on, parity, ratio, flowPaused, selectionOn, selParity }; },
+    getState() {
+      return {
+        on, parity, ratio, flowPaused, selectionOn, selParity,
+        stripeWidth, stripeSpeed, randomAngle, randomDir, stripeAngle, flowAngle
+      };
+    },
     collect,
     collectLines,
     collectSelectionLines,
     pause,
     setRatio,
     clampRatio,
+    clampWidth,
+    clampSpeed,
+    applyStripePrefs,
+    rollStripeStyle,
     maskSelection,
     endSelection,
+    captureSelection,
     useFakeTimers,
     advanceFakeTimers,
-    STRIPE_BAR,
-    STRIPE_PERIOD,
-    STRIPE_SPEED,
+    get STRIPE_BAR() { return stripeWidth; },
+    get STRIPE_PERIOD() { return stripePeriod(); },
+    get STRIPE_SPEED() { return stripeSpeed; },
     SEL_SWAP_MS,
+    WIDTH_DEFAULT,
+    SPEED_DEFAULT,
   };
+
+  document.addEventListener("contextmenu", captureSelection, true);
+  document.addEventListener("selectionchange", captureSelection, true);
 
   function bindStorage() {
     if (!api || !api.storage || !api.storage.local) return;
+    const keys = ["ratio", "stripeWidth", "stripeSpeed", "randomAngle", "randomDir"];
     try {
-      api.storage.local.get("ratio").then((res) => {
-        if (res && res.ratio != null) setRatio(res.ratio);
+      api.storage.local.get(keys).then((res) => {
+        if (!res) return;
+        if (res.ratio != null) setRatio(res.ratio);
+        applyStripePrefs({
+          stripeWidth: res.stripeWidth,
+          stripeSpeed: res.stripeSpeed,
+          randomAngle: res.randomAngle,
+          randomDir: res.randomDir,
+        }, false);
+        if (!randomAngle) stripeAngle = DEFAULT_STRIPE_ANGLE;
+        if (!randomDir) flowAngle = DEFAULT_FLOW_ANGLE;
       }).catch(() => {});
     } catch (_) {}
     if (api.storage.onChanged) {
       api.storage.onChanged.addListener((changes, area) => {
         if (area && area !== "local") return;
-        if (changes && Object.prototype.hasOwnProperty.call(changes, "ratio")) {
+        if (!changes) return;
+        if (Object.prototype.hasOwnProperty.call(changes, "ratio")) {
           setRatio(changes.ratio && changes.ratio.newValue);
         }
+        const prefs = {};
+        let any = false;
+        for (const k of ["stripeWidth", "stripeSpeed", "randomAngle", "randomDir"]) {
+          if (Object.prototype.hasOwnProperty.call(changes, k)) {
+            prefs[k] = changes[k] && changes[k].newValue;
+            any = true;
+          }
+        }
+        if (any) applyStripePrefs(prefs, false);
       });
     }
   }

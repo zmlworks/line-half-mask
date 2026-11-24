@@ -359,17 +359,25 @@ async function openPage(browser, url, viewport) {
   const created = [];
   const clickHandlers = [];
   const sent = [];
+  const installed = [];
+  const startups = [];
+  let removed = false;
   const withMenus = {
     menus: {
       create(item) { created.push(item); return item.id; },
+      remove() { removed = true; },
       onClicked: { addListener(fn) { clickHandlers.push(fn); } },
     },
     tabs: {
-      sendMessage(id, msg) { sent.push({ id, msg }); return Promise.resolve(); },
+      sendMessage(id, msg, options) { sent.push({ id, msg, options }); return Promise.resolve({ ok: true, selectionOn: true }); },
       query() { return Promise.resolve([]); },
     },
     commands: { onCommand: { addListener() {} } },
-    runtime: { onMessage: { addListener() {} } },
+    runtime: {
+      onMessage: { addListener() {} },
+      onInstalled: { addListener(fn) { installed.push(fn); } },
+      onStartup: { addListener(fn) { startups.push(fn); } },
+    },
     action: { setTitle() {} },
   };
   let threw = false;
@@ -381,15 +389,51 @@ async function openPage(browser, url, viewport) {
     !!(item && item.title === "選択範囲だけマスク" && Array.isArray(item.contexts) && item.contexts.includes("selection")),
     item || created
   );
-  if (clickHandlers[0]) clickHandlers[0]({ menuItemId: "line-half-mask-selection" }, { id: 9 });
-  check("choosing the selection menu sends maskSelection to the tab", sent.some((s) => s.id === 9 && s.msg && s.msg.type === "maskSelection"), sent);
+  check("background does not remove the menu on startup", removed === false, { removed, created: created.length });
+  check("onClicked is registered at top level (also has onInstalled/onStartup)", clickHandlers.length >= 1 && installed.length >= 1 && startups.length >= 1, { clicks: clickHandlers.length, installed: installed.length, startups: startups.length });
+  await Promise.resolve(clickHandlers[0]({ menuItemId: "line-half-mask-selection", frameId: 3 }, { id: 9 }));
+  check(
+    "choosing the selection menu sends maskSelection to the tab frame",
+    sent.some((s) => s.id === 9 && s.msg && s.msg.type === "maskSelection" && s.options && s.options.frameId === 3),
+    sent
+  );
+
+  const injections = [];
+  const sent2 = [];
+  let failOnce = true;
+  const withInject = {
+    menus: { create(item) { return item.id; }, onClicked: { addListener(fn) { clickHandlers.push(fn); } } },
+    tabs: {
+      sendMessage: async (id, msg, options) => {
+        if (failOnce) { failOnce = false; throw new Error("Could not establish connection. Receiving end does not exist."); }
+        sent2.push({ id, msg, options });
+        return { ok: true, selectionOn: true };
+      },
+      query() { return Promise.resolve([]); },
+    },
+    scripting: {
+      executeScript: async (opts) => { injections.push(opts); },
+    },
+    commands: { onCommand: { addListener() {} } },
+    runtime: { onMessage: { addListener() {} }, onInstalled: { addListener() {} }, onStartup: { addListener() {} } },
+    action: { setTitle() {} },
+  };
+  const injectHandlers = [];
+  withInject.menus.onClicked.addListener = (fn) => injectHandlers.push(fn);
+  loadBg(withInject);
+  const res = await Promise.resolve(injectHandlers[0]({ menuItemId: "line-half-mask-selection", frameId: 0 }, { id: 11 }));
+  check(
+    "when the content script is missing, the menu path injects it and retries maskSelection",
+    injections.length >= 1 && injections[0].files && injections[0].files.includes("content.js") && injections[0].target && injections[0].target.tabId === 11 && sent2.some((s) => s.msg && s.msg.type === "maskSelection") && res && res.ok === true,
+    { injections, sent2, res }
+  );
 
   let missingThrew = false;
   try {
     loadBg({
       tabs: { sendMessage() { return Promise.resolve(); }, query() { return Promise.resolve([]); } },
       commands: { onCommand: { addListener() {} } },
-      runtime: { onMessage: { addListener() {} } },
+      runtime: { onMessage: { addListener() {} }, onInstalled: { addListener() {} }, onStartup: { addListener() {} } },
       action: { setTitle() {} },
     });
   } catch (err) { missingThrew = err; }
@@ -558,6 +602,12 @@ check(
     return { lo: c(40), hi: c(99), nan: c("x"), mid: c(60.4), d: c(50) };
   });
   check("ratio input is clamped to 50-90 integers", clamps.lo === 50 && clamps.hi === 90 && clamps.nan === 50 && clamps.mid === 60 && clamps.d === 50, clamps);
+  const stripeClamps = await page.evaluate(() => {
+    const W = window.__lineHalfMask.clampWidth;
+    const S = window.__lineHalfMask.clampSpeed;
+    return { wlo: W(0), whi: W(20), wnan: W("x"), wmid: W(8.4), slo: S(-3), shi: S(90), smid: S(30), sz: S(0) };
+  });
+  check("stripe width is clamped to 1-16 and speed to 0-60", stripeClamps.wlo === 1 && stripeClamps.whi === 16 && stripeClamps.wnan === 8 && stripeClamps.wmid === 8 && stripeClamps.slo === 0 && stripeClamps.shi === 60 && stripeClamps.smid === 30 && stripeClamps.sz === 0, stripeClamps);
 
   await page.evaluate(() => window.__lineHalfMask.setRatio(60));
   await page.waitForTimeout(40);
@@ -943,6 +993,51 @@ if (touchA.supported) {
     part && { width: part.width, lineWidth: firstJa.right - firstJa.left, left: part.left, lineLeft: firstJa.left, n: partMasks.length }
   );
   await page.evaluate(() => window.__lineHalfMask.endSelection());
+
+  const lost = await page.evaluate(() => {
+    const el = document.getElementById("p-ja");
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    const sel = getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    el.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2, clientX: 80, clientY: 200 }));
+    sel.removeAllRanges();
+    const ok = window.__lineHalfMask.maskSelection();
+    window.__lineHalfMask.pause(true);
+    return { ok, state: window.__lineHalfMask.getState(), masks: window.__lineHalfMask.collect().length };
+  });
+  check(
+    "contextmenu captures the range so maskSelection still works after the selection is cleared",
+    lost.ok === true && lost.state.selectionOn === true && lost.masks >= 2,
+    lost
+  );
+  await page.screenshot({ path: path.join(shotDir, "desktop-selection.png"), fullPage: false });
+  await page.evaluate(() => window.__lineHalfMask.endSelection());
+
+  const angles = await page.evaluate(() => {
+    const api = window.__lineHalfMask;
+    api.applyStripePrefs({ randomAngle: false, randomDir: false }, true);
+    const off = { angle: api.getState().stripeAngle, dir: api.getState().flowAngle };
+    api.applyStripePrefs({ randomAngle: true, randomDir: true }, true);
+    const a1 = { angle: api.getState().stripeAngle, dir: api.getState().flowAngle };
+    api.swap();
+    const a2 = { angle: api.getState().stripeAngle, dir: api.getState().flowAngle };
+    api.applyStripePrefs({ randomAngle: false, randomDir: false }, true);
+    const reset = { angle: api.getState().stripeAngle, dir: api.getState().flowAngle };
+    return { off, a1, a2, reset, defAngle: -Math.PI / 4, defDir: Math.PI / 4 };
+  });
+  check(
+    "random tilt and direction change on swap and reset to 45 degrees when off",
+    Math.abs(angles.off.angle - angles.defAngle) < 1e-9 &&
+      Math.abs(angles.off.dir - angles.defDir) < 1e-9 &&
+      Math.abs(angles.a1.angle - angles.defAngle) > 1e-6 &&
+      (Math.abs(angles.a1.angle - angles.a2.angle) > 1e-12 || Math.abs(angles.a1.dir - angles.a2.dir) > 1e-12) &&
+      Math.abs(angles.reset.angle - angles.defAngle) < 1e-9 &&
+      Math.abs(angles.reset.dir - angles.defDir) < 1e-9,
+    angles
+  );
+  await page.evaluate(() => window.__lineHalfMask.applyStripePrefs({ stripeWidth: 8, stripeSpeed: 30, randomAngle: false, randomDir: false }, true));
 }
 
 await page.evaluate(() => window.__lineHalfMask.toggle());
@@ -994,7 +1089,7 @@ await mpage.close();
       window.__commandStore = ${JSON.stringify(store)};
       window.__commandUpdates = [];
       window.__commandResets = [];
-      window.__storage = { ratio: 50 };
+      window.__storage = { ratio: 50, stripeWidth: 8, stripeSpeed: 30, randomAngle: false, randomDir: false };
       window.__storageSets = [];
       window.__messages = [];
       const api = {
@@ -1003,12 +1098,22 @@ await mpage.close();
           sendMessage: async (_id, msg) => {
             window.__messages.push(msg);
             if (msg && msg.type === "setRatio") window.__storage.ratio = msg.ratio;
-            return { on: false, parity: 0, ratio: window.__storage.ratio };
+            if (msg && msg.type === "setStripe") Object.assign(window.__storage, msg);
+            return { on: false, parity: 0, ratio: window.__storage.ratio, stripeWidth: window.__storage.stripeWidth, stripeSpeed: window.__storage.stripeSpeed, randomAngle: window.__storage.randomAngle, randomDir: window.__storage.randomDir };
           },
         },
         storage: {
           local: {
-            get: async () => ({ ratio: window.__storage.ratio }),
+            get: async (keys) => {
+              if (!keys) return Object.assign({}, window.__storage);
+              if (typeof keys === "string") return { [keys]: window.__storage[keys] };
+              if (Array.isArray(keys)) {
+                const out = {};
+                for (const k of keys) out[k] = window.__storage[k];
+                return out;
+              }
+              return Object.assign({}, window.__storage);
+            },
             set: async (obj) => { Object.assign(window.__storage, obj); window.__storageSets.push(obj); },
           },
         },
@@ -1036,7 +1141,7 @@ await mpage.close();
   });
 
   const store = { "toggle-mask": "Alt+Shift+L", "swap-parity": "Alt+Shift+K" };
-  const popupPage = await browser.newPage({ viewport: { width: 320, height: 520 } });
+  const popupPage = await browser.newPage({ viewport: { width: 320, height: 820 } });
   await popupPage.addInitScript(stub("linux", store));
   await popupPage.goto(url.replace("/tests/sample.html", "/src/popup.html"), { waitUntil: "load" });
   await popupPage.waitForTimeout(120);
@@ -1071,7 +1176,56 @@ await mpage.close();
   await popupPage.fill("#ratio", "60");
   await popupPage.evaluate(() => document.getElementById("ratio").blur());
   await popupPage.waitForTimeout(80);
-  await popupPage.screenshot({ path: path.join(shotDir, "popup-shortcuts.png") });
+  const stripeStart = await popupPage.evaluate(() => ({
+    width: document.getElementById("stripe-width").value,
+    speed: document.getElementById("stripe-speed").value,
+    angle: document.getElementById("random-angle").checked,
+    dir: document.getElementById("random-dir").checked,
+  }));
+  check("desktop popup shows stripe width 8 and speed 30", stripeStart.width === "8" && stripeStart.speed === "30" && stripeStart.angle === false && stripeStart.dir === false, stripeStart);
+  await popupPage.fill("#stripe-width", "12");
+  await popupPage.fill("#stripe-speed", "45");
+  await popupPage.evaluate(() => {
+    document.getElementById("stripe-width").blur();
+    document.getElementById("stripe-speed").blur();
+    document.getElementById("random-angle").click();
+    document.getElementById("random-dir").click();
+  });
+  await popupPage.waitForTimeout(80);
+  const stripeSaved = await popupPage.evaluate(() => ({
+    width: document.getElementById("stripe-width").value,
+    speed: document.getElementById("stripe-speed").value,
+    angle: document.getElementById("random-angle").checked,
+    dir: document.getElementById("random-dir").checked,
+    storage: window.__storage,
+    messages: window.__messages.filter((m) => m && m.type === "setStripe"),
+  }));
+  check(
+    "popup saves stripe width, speed, and random flags",
+    stripeSaved.width === "12" && stripeSaved.speed === "45" && stripeSaved.angle === true && stripeSaved.dir === true && stripeSaved.storage.stripeWidth === 12 && stripeSaved.storage.stripeSpeed === 45 && stripeSaved.storage.randomAngle === true && stripeSaved.storage.randomDir === true && stripeSaved.messages.some((m) => m.stripeWidth === 12 && m.randomAngle === true),
+    stripeSaved
+  );
+  await popupPage.fill("#stripe-width", "0");
+  await popupPage.fill("#stripe-speed", "99");
+  await popupPage.evaluate(() => {
+    document.getElementById("stripe-width").blur();
+    document.getElementById("stripe-speed").blur();
+  });
+  await popupPage.waitForTimeout(80);
+  const stripeClamped = await popupPage.evaluate(() => ({
+    width: document.getElementById("stripe-width").value,
+    speed: document.getElementById("stripe-speed").value,
+    storage: window.__storage,
+  }));
+  check("popup clamps stripe width 0 to 1 and speed 99 to 60", stripeClamped.width === "1" && stripeClamped.speed === "60" && stripeClamped.storage.stripeWidth === 1 && stripeClamped.storage.stripeSpeed === 60, stripeClamped);
+  await popupPage.fill("#stripe-width", "8");
+  await popupPage.fill("#stripe-speed", "30");
+  await popupPage.evaluate(() => {
+    document.getElementById("stripe-width").blur();
+    document.getElementById("stripe-speed").blur();
+  });
+  await popupPage.waitForTimeout(80);
+  await popupPage.screenshot({ path: path.join(shotDir, "popup-shortcuts.png"), fullPage: true });
 
   await popupPage.click("#shortcut-toggle");
   await popupPage.keyboard.down("Alt");
@@ -1129,7 +1283,7 @@ await mpage.close();
   );
   await popupPage.close();
 
-  const androidPage = await browser.newPage({ viewport: { width: 320, height: 400 } });
+  const androidPage = await browser.newPage({ viewport: { width: 320, height: 640 } });
   await androidPage.addInitScript(stub("android", store));
   await androidPage.goto(url.replace("/tests/sample.html", "/src/popup.html"), { waitUntil: "load" });
   await androidPage.waitForTimeout(120);
@@ -1137,12 +1291,225 @@ await mpage.close();
     hidden: document.getElementById("shortcuts").hidden,
     hasClass: document.body.classList.contains("has-shortcuts"),
     ratio: document.getElementById("ratio") ? document.getElementById("ratio").value : null,
+    width: document.getElementById("stripe-width") ? document.getElementById("stripe-width").value : null,
+    speed: document.getElementById("stripe-speed") ? document.getElementById("stripe-speed").value : null,
+    angle: document.getElementById("random-angle") ? document.getElementById("random-angle").checked : null,
+    dir: document.getElementById("random-dir") ? document.getElementById("random-dir").checked : null,
   }));
   check("Android popup hides shortcut settings", androidUi.hidden === true && androidUi.hasClass === false, androidUi);
   check("Android popup shows the ratio field", androidUi.ratio === "50", androidUi);
+  check("Android popup shows stripe width, speed, and random flags", androidUi.width === "8" && androidUi.speed === "30" && androidUi.angle === false && androidUi.dir === false, androidUi);
   await androidPage.close();
 }
 
+{
+  const net = await import("net");
+  const { spawn } = await import("child_process");
+  const FF_BIN = firefox.executablePath();
+  const port = 29211 + Math.floor(Math.random() * 200);
+  const profile = fs.mkdtempSync(path.join(os.tmpdir(), "lhm-mar-"));
+  fs.writeFileSync(path.join(profile, "user.js"), [
+    'user_pref("xpinstall.signatures.required", false);',
+    'user_pref("extensions.autoDisableScopes", 0);',
+    `user_pref("marionette.port", ${port});`,
+    'user_pref("marionette.enabled", true);',
+    'user_pref("datareporting.policy.dataSubmissionEnabled", false);',
+    'user_pref("toolkit.telemetry.reportingpolicy.firstRun", false);',
+    'user_pref("dom.w3c_touch_events.enabled", 2);',
+  ].join("\n"));
+
+  function Marionette(sock) {
+    this.sock = sock;
+    this.buf = Buffer.alloc(0);
+    this.pending = new Map();
+    this.id = 1;
+    this.hello = new Promise((resolve) => { this._hello = resolve; });
+    sock.on("data", (d) => this._onData(d));
+  }
+  Marionette.prototype._onData = function (d) {
+    this.buf = Buffer.concat([this.buf, d]);
+    while (true) {
+      const colon = this.buf.indexOf(0x3a);
+      if (colon < 0) return;
+      const len = parseInt(this.buf.slice(0, colon).toString(), 10);
+      if (!Number.isFinite(len)) return;
+      if (this.buf.length < colon + 1 + len) return;
+      const json = this.buf.slice(colon + 1, colon + 1 + len).toString("utf8");
+      this.buf = this.buf.slice(colon + 1 + len);
+      const msg = JSON.parse(json);
+      if (msg && !Array.isArray(msg) && this._hello) { this._hello(msg); this._hello = null; continue; }
+      if (Array.isArray(msg)) {
+        const [, mid, err, result] = msg;
+        const pending = this.pending.get(mid);
+        if (pending) {
+          this.pending.delete(mid);
+          if (err) pending.reject(Object.assign(new Error(err.message || JSON.stringify(err)), { err }));
+          else pending.resolve(result);
+        }
+      }
+    }
+  };
+  Marionette.prototype.send = function (name, parameters = {}) {
+    const id = this.id++;
+    const payload = JSON.stringify([0, id, name, parameters]);
+    this.sock.write(Buffer.byteLength(payload, "utf8") + ":" + payload);
+    return new Promise((resolve, reject) => this.pending.set(id, { resolve, reject }));
+  };
+  Marionette.prototype.val = function (r) { return r && Object.prototype.hasOwnProperty.call(r, "value") ? r.value : r; };
+
+  function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
+
+  const child = spawn(FF_BIN, ["-marionette", "-remote-allow-system-access", "-headless", "-no-remote", "-profile", profile], {
+    stdio: ["ignore", "pipe", "pipe"],
+    env: { ...process.env, MOZ_HEADLESS: "1" },
+  });
+  let ffLog = "";
+  child.stdout.on("data", (d) => { ffLog += d.toString(); });
+  child.stderr.on("data", (d) => { ffLog += d.toString(); });
+
+  let menuPath = { loaded: false };
+  try {
+    let sock;
+    for (let i = 0; i < 50; i++) {
+      try {
+        sock = await new Promise((resolve, reject) => {
+          const s = net.connect({ host: "127.0.0.1", port }, () => resolve(s));
+          s.once("error", reject);
+        });
+        break;
+      } catch (_) { await sleep(200); }
+    }
+    if (!sock) throw new Error("marionette not listening: " + ffLog.slice(-500));
+    const m = new Marionette(sock);
+    await Promise.race([m.hello, sleep(4000).then(() => { throw new Error("no marionette hello"); })]);
+    await m.send("WebDriver:NewSession", { capabilities: {} });
+    const inst = await m.send("Addon:Install", { path: srcDir, temporary: true });
+    menuPath.installed = m.val(inst);
+    await m.send("WebDriver:SetWindowRect", { width: 800, height: 1600, x: 0, y: 0 });
+    await m.send("WebDriver:SetTimeouts", { script: 20000, pageLoad: 20000, implicit: 0 });
+    await m.send("WebDriver:Navigate", { url });
+    await sleep(800);
+    await m.send("Marionette:SetContext", { value: "content" });
+    const prep = m.val(await m.send("WebDriver:ExecuteScript", {
+      script: `const el = document.getElementById("p-ja");
+        if (!el) return { ok: false, reason: "no-p-ja" };
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        const sel = getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+        el.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2, clientX: 80, clientY: 200 }));
+        sel.removeAllRanges();
+        return { ok: true, selectionRemaining: getSelection().toString().length > 0 };`,
+      args: [],
+    }));
+    menuPath.prep = prep;
+    await m.send("Marionette:SetContext", { value: "chrome" });
+    const opened = m.val(await m.send("WebDriver:ExecuteScript", {
+      script: `const policy = WebExtensionPolicy.getByID("line.half.mask@kofu.com");
+        const ext = policy.extension;
+        const win = Services.wm.getMostRecentWindow("navigator:browser");
+        const contentTab = win.gBrowser.selectedTab;
+        const tabId = ext.tabManager.getWrapper(contentTab).id;
+        const extUrl = "moz-extension://" + ext.uuid + "/popup.html";
+        const newTab = win.gBrowser.addTab(extUrl, { triggeringPrincipal: ext.principal });
+        win.gBrowser.selectedTab = newTab;
+        win.__lhmContentTab = contentTab;
+        return { tabId, extUrl };`,
+      args: [],
+    }));
+    menuPath.tabId = opened && opened.tabId;
+    await sleep(700);
+    let handles = m.val(await m.send("WebDriver:GetWindowHandles", {}));
+    if (!Array.isArray(handles)) handles = handles ? [handles] : [];
+    menuPath.handles = handles;
+    await m.send("Marionette:SetContext", { value: "content" });
+    let popupUrl = null;
+    for (const h of handles) {
+      try {
+        await m.send("WebDriver:SwitchToWindow", { handle: h, name: h });
+        const loc = String(m.val(await m.send("WebDriver:GetCurrentURL", {})) || "");
+        if (loc.startsWith("moz-extension://")) { popupUrl = loc; break; }
+        if (!popupUrl) popupUrl = loc;
+      } catch (e) { menuPath.switchErr = String(e && e.message || e); }
+    }
+    menuPath.popupUrl = popupUrl;
+    const sent = m.val(await m.send("WebDriver:ExecuteAsyncScript", {
+      script: `const cb = arguments[arguments.length - 1];
+        const tabId = arguments[0];
+        (async () => {
+          const hasBrowser = typeof browser !== "undefined" && !!(browser.runtime && browser.runtime.sendMessage);
+          let res = null, err = null;
+          if (hasBrowser) {
+            try { res = await browser.runtime.sendMessage({ type: "debugMenuClick", tabId, frameId: 0 }); }
+            catch (e) { err = String(e && e.message || e); }
+          }
+          cb({ hasBrowser, href: location.href, res, err });
+        })().catch((e) => cb({ err: String(e && e.message || e) }));`,
+      args: [opened && opened.tabId],
+    }));
+    menuPath.sent = sent;
+    menuPath.res = sent && sent.res;
+    await m.send("Marionette:SetContext", { value: "chrome" });
+    await m.send("WebDriver:ExecuteScript", {
+      script: `const win = Services.wm.getMostRecentWindow("navigator:browser");
+        if (win.__lhmContentTab) win.gBrowser.selectedTab = win.__lhmContentTab;
+        return true;`,
+      args: [],
+    });
+    await sleep(300);
+    await m.send("Marionette:SetContext", { value: "content" });
+    for (const h of handles) {
+      try {
+        await m.send("WebDriver:SwitchToWindow", { handle: h, name: h });
+        const loc = String(m.val(await m.send("WebDriver:GetCurrentURL", {})) || "");
+        if (loc.includes("/tests/sample.html")) break;
+      } catch (_) {}
+    }
+    const after = m.val(await m.send("WebDriver:ExecuteScript", {
+      script: `const root = document.getElementById("line-half-mask-root");
+        return {
+          href: location.href,
+          hasRoot: !!root,
+          tag: root && root.tagName,
+          width: root && root.width,
+          height: root && root.height,
+          selectionRemaining: !!(getSelection() && getSelection().toString()),
+        };`,
+      args: [],
+    }));
+    menuPath.after = after;
+    if (after && after.hasRoot && after.tag === "CANVAS") {
+      const shot = m.val(await m.send("WebDriver:TakeScreenshot", { full: false, hash: false }));
+      if (typeof shot === "string" && shot.length > 100) {
+        fs.writeFileSync(path.join(shotDir, "desktop-selection-menu.png"), Buffer.from(shot, "base64"));
+        menuPath.screenshot = true;
+      }
+    }
+    try { await m.send("WebDriver:DeleteSession", {}); } catch (_) {}
+    try { sock.end(); } catch (_) {}
+  } catch (err) {
+    menuPath = Object.assign(menuPath, { error: String(err && err.message || err), log: ffLog.slice(-800) });
+  } finally {
+    try { child.kill("SIGKILL"); } catch (_) {}
+    await sleep(200);
+    try { fs.rmSync(profile, { recursive: true, force: true }); } catch (_) {}
+  }
+  check(
+    "real add-on menu path: background debugMenuClick masks the captured selection after it is cleared",
+    !!(menuPath.installed === "line.half.mask@kofu.com" &&
+      menuPath.prep && menuPath.prep.selectionRemaining === false &&
+      menuPath.res && menuPath.res.ok === true && menuPath.res.selectionOn === true &&
+      menuPath.after && menuPath.after.hasRoot && menuPath.after.tag === "CANVAS" &&
+      menuPath.after.width > 0 && menuPath.screenshot),
+    menuPath
+  );
+}
+
+await browser.close();
+server.close();
+await browser.close();
+server.close();
 await browser.close();
 server.close();
 

@@ -53,16 +53,27 @@
     .err {
       color: #a40000;
     }
-    .shortcut, .ratio {
+    .shortcut, .ratio, .stripe {
       display: block;
       margin: 0 0 8px;
     }
-    .shortcut span, .ratio span {
+    .check {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 13px;
+      margin: 0 0 8px;
+    }
+    .check input {
+      width: auto;
+      margin: 0;
+    }
+    .shortcut span, .ratio span, .stripe span {
       display: block;
       font-size: 12px;
       margin: 0 0 3px;
     }
-    .shortcut input, .ratio input {
+    .shortcut input, .ratio input, .stripe input[type="number"] {
       box-sizing: border-box;
       width: 100%;
       padding: 8px 8px;
@@ -72,7 +83,7 @@
       background: #fff;
       color: #111;
     }
-    .shortcut input:focus, .ratio input:focus {
+    .shortcut input:focus, .ratio input:focus, .stripe input:focus {
       outline: 2px solid #222;
       outline-offset: 1px;
     }
@@ -92,6 +103,24 @@
     <input id="ratio" type="number" min="50" max="90" step="1" value="50">
   </label>
   <p class="note">50 から 90 までの整数です。</p>
+  <label class="stripe">
+    <span>縞の幅（ピクセル）</span>
+    <input id="stripe-width" type="number" min="1" max="16" step="1" value="8">
+  </label>
+  <p class="note">1 から 16 までの整数です。</p>
+  <label class="stripe">
+    <span>速さ（ピクセル毎秒）</span>
+    <input id="stripe-speed" type="number" min="0" max="60" step="1" value="30">
+  </label>
+  <p class="note">0 から 60 までの整数です。0 で止まります。</p>
+  <label class="check">
+    <input id="random-angle" type="checkbox">
+    <span>線の傾きをランダム</span>
+  </label>
+  <label class="check">
+    <input id="random-dir" type="checkbox">
+    <span>進む向きをランダム</span>
+  </label>
   <section id="shortcuts" hidden>
     <h2>ショートカット</h2>
     <label class="shortcut">
