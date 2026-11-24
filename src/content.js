@@ -5,11 +5,13 @@
   const api = typeof browser !== "undefined" ? browser : typeof chrome !== "undefined" ? chrome : null;
   const ROOT_ID = "line-half-mask-root";
   const Z = "2147483647";
-  // 45度の縞（黒1px＋白1px）。勾配方向 2px が1周期。約 3px/s。
+  // 45度の縞（黒8px＋白8px）。勾配方向 16px が1周期。約 30px/s。
   // 流れは canvas を毎フレーム描き直す。CSS アニメや clip-path 内の transform、
   // background-position は Firefox で再描画されないことがある。OS の動きを減らす設定も無視する。
-  const STRIPE_PERIOD = 2;
-  const STRIPE_SPEED = 3;
+  const STRIPE_BAR = 8;
+  const STRIPE_PERIOD = 16;
+  const STRIPE_SPEED = 30;
+  const SEL_SWAP_MS = 3000;
   const RATIO_MIN = 50;
   const RATIO_MAX = 90;
   const RATIO_DEFAULT = 50;
@@ -36,6 +38,14 @@
   let flowPausedAt = 0;
   let flowPaused = false;
   let lastMasks = [];
+  let selectionOn = false;
+  let selParity = 0;
+  let selRanges = [];
+  let selTimer = 0;
+  let listenersBound = false;
+  let touchBound = false;
+  let clickBound = false;
+  let fakeTimers = null;
 
   function clampRatio(v) {
     const n = Math.round(Number(v));
@@ -47,14 +57,57 @@
 
   function reportState() {
     if (!api || !api.runtime || !api.runtime.sendMessage) return;
-    try { api.runtime.sendMessage({ type: "state", on, parity, ratio }); } catch (_) {}
+    try { api.runtime.sendMessage({ type: "state", on, parity, ratio, selectionOn, selParity }); } catch (_) {}
+  }
+
+  function currentTime() {
+    return fakeTimers ? fakeTimers.now : performance.now();
+  }
+
+  function scheduleInterval(fn, ms) {
+    if (fakeTimers) {
+      const id = { fn, ms, next: fakeTimers.now + ms, cleared: false };
+      fakeTimers.intervals.push(id);
+      return id;
+    }
+    return setInterval(fn, ms);
+  }
+
+  function clearScheduled(id) {
+    if (!id && id !== 0) return;
+    if (fakeTimers && typeof id === "object") {
+      id.cleared = true;
+      return;
+    }
+    clearInterval(id);
+  }
+
+  function useFakeTimers() {
+    fakeTimers = { now: 0, intervals: [] };
+  }
+
+  function advanceFakeTimers(ms) {
+    if (!fakeTimers) useFakeTimers();
+    const n = Number(ms);
+    if (!Number.isFinite(n) || n <= 0) return fakeTimers.now;
+    fakeTimers.now += n;
+    const list = fakeTimers.intervals.slice();
+    for (let i = 0; i < list.length; i++) {
+      const it = list[i];
+      if (it.cleared) continue;
+      while (it.next <= fakeTimers.now) {
+        it.fn();
+        it.next += it.ms;
+      }
+    }
+    return fakeTimers.now;
   }
 
   function setRatio(v) {
     const next = clampRatio(v);
     if (next === ratio) return next;
     ratio = next;
-    if (on) update();
+    if (on || selectionOn) update();
     reportState();
     return ratio;
   }
@@ -65,6 +118,12 @@
   }
 
   function swap() {
+    if (selectionOn) {
+      selParity = selParity ? 0 : 1;
+      update();
+      reportState();
+      return;
+    }
     parity = parity ? 0 : 1;
     if (on) update();
     reportState();
@@ -72,41 +131,79 @@
 
   const touchOpts = { capture: true, passive: true };
 
-  function start() {
-    if (on) return;
-    on = true;
-    ensureRoot();
-    update();
-    startFlow();
+  function bindSharedListeners() {
+    if (listenersBound) return;
+    listenersBound = true;
     window.addEventListener("scroll", schedule, { capture: true, passive: true });
     window.addEventListener("resize", schedule, { capture: true, passive: true });
+    mo = new MutationObserver(onMutations);
+    mo.observe(document.documentElement, { subtree: true, childList: true, characterData: true });
+  }
+
+  function unbindSharedListeners() {
+    if (!listenersBound) return;
+    listenersBound = false;
+    window.removeEventListener("scroll", schedule, { capture: true });
+    window.removeEventListener("resize", schedule, { capture: true });
+    if (mo) { mo.disconnect(); mo = null; }
+  }
+
+  function bindTouch() {
+    if (touchBound) return;
+    touchBound = true;
     for (const target of [window, document]) {
       target.addEventListener("touchstart", onTouchStart, touchOpts);
       target.addEventListener("touchmove", onTouchMove, touchOpts);
       target.addEventListener("touchend", onTouchEnd, touchOpts);
       target.addEventListener("touchcancel", onTouchCancel, touchOpts);
     }
-    mo = new MutationObserver(onMutations);
-    mo.observe(document.documentElement, { subtree: true, childList: true, characterData: true });
-    reportState();
   }
 
-  function stop() {
-    on = false;
-    stopFlow();
-    tap = null;
-    window.removeEventListener("scroll", schedule, { capture: true });
-    window.removeEventListener("resize", schedule, { capture: true });
-    lastTwoTapAt = 0;
+  function unbindTouch() {
+    if (!touchBound) return;
+    touchBound = false;
     for (const target of [window, document]) {
       target.removeEventListener("touchstart", onTouchStart, touchOpts);
       target.removeEventListener("touchmove", onTouchMove, touchOpts);
       target.removeEventListener("touchend", onTouchEnd, touchOpts);
       target.removeEventListener("touchcancel", onTouchCancel, touchOpts);
     }
-    if (mo) { mo.disconnect(); mo = null; }
+  }
+
+  function teardownOverlay() {
+    stopFlow();
+    unbindSharedListeners();
+    unbindTouch();
+    unbindClickExit();
+    tap = null;
+    lastTwoTapAt = 0;
     if (root) { root.remove(); root = null; }
     lastMasks = [];
+  }
+
+  function start() {
+    if (on) return;
+    on = true;
+    bindSharedListeners();
+    bindTouch();
+    if (!selectionOn) {
+      ensureRoot();
+      update();
+      startFlow();
+    }
+    reportState();
+  }
+
+  function stop() {
+    on = false;
+    tap = null;
+    lastTwoTapAt = 0;
+    unbindTouch();
+    if (selectionOn) {
+      reportState();
+      return;
+    }
+    teardownOverlay();
     reportState();
   }
 
@@ -205,11 +302,11 @@
   }
 
   function schedule() {
-    if (!on || scheduled) return;
+    if (!(on || selectionOn) || scheduled) return;
     scheduled = true;
     requestAnimationFrame(() => {
       scheduled = false;
-      if (on) update();
+      if (on || selectionOn) update();
     });
   }
 
@@ -287,9 +384,9 @@
     c.fillStyle = "#000";
     c.fillRect(x0, y0, w, h);
     c.fillStyle = "#fff";
-    const yStart = Math.floor(y0 / STRIPE_PERIOD) * STRIPE_PERIOD + 1;
+    const yStart = Math.floor(y0 / STRIPE_PERIOD) * STRIPE_PERIOD + STRIPE_BAR;
     for (let y = yStart; y < y0 + h; y += STRIPE_PERIOD) {
-      c.fillRect(x0, y, w, 1);
+      c.fillRect(x0, y, w, STRIPE_BAR);
     }
     c.restore();
   }
@@ -313,7 +410,7 @@
 
   function flowTick(now) {
     flowRaf = 0;
-    if (!on || flowPaused) return;
+    if ((!(on || selectionOn)) || flowPaused) return;
     applyFlow(now);
     flowRaf = requestAnimationFrame(flowTick);
   }
@@ -354,7 +451,7 @@
       applyFlow(flowPausedAt);
       return;
     }
-    if (!on) return;
+    if (!on && !selectionOn) return;
     startFlow();
   }
 
@@ -460,19 +557,19 @@
 
   // coverTop: true ならその行の上半分、false なら下半分。
   // 通常は奇数行（0始まりで偶数 index）が下、偶数行が上。入れ替えで逆。
-  function coverTopForIndex(index) {
+  function coverTopForIndex(index, p) {
+    if (p === undefined) p = selectionOn ? selParity : parity;
     const odd = (index % 2) === 0;
-    return odd ? parity === 1 : parity === 0;
+    return odd ? p === 1 : p === 0;
   }
 
-  function collect() {
-    const lines = collectLines();
+  function masksFromLines(lines, p) {
     const masks = [];
+    const frac = ratio / 100;
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
       const h = line.bottom - line.top;
-      const frac = ratio / 100;
-      const coverTop = coverTopForIndex(i);
+      const coverTop = coverTopForIndex(i, p);
       const top = coverTop ? line.top : line.top + h * (1 - frac);
       const bottom = coverTop ? line.top + h * frac : line.bottom;
       const clip = ancestorClip(line.el);
@@ -486,12 +583,134 @@
     return masks;
   }
 
+  function collectPage() {
+    return masksFromLines(collectLines(), parity);
+  }
+
+  // 選択範囲の Range.getClientRects を行にまとめ、各行では選択された横幅だけを塗る
+  // （行箱全体ではなく、その部分だけ、という指定に合わせる）。
+  function collectSelectionLines() {
+    const rects = [];
+    for (let i = 0; i < selRanges.length; i++) {
+      const range = selRanges[i];
+      if (!range || range.collapsed) continue;
+      let list;
+      try { list = range.getClientRects(); } catch (_) { continue; }
+      const node = range.commonAncestorContainer;
+      const host = node && (node.nodeType === 1 ? node : node.parentElement);
+      for (let j = 0; j < list.length; j++) {
+        const r = list[j];
+        if (r.width <= 0 || r.height <= 0) continue;
+        rects.push({
+          top: r.top,
+          bottom: r.bottom,
+          left: r.left,
+          right: r.right,
+          width: r.width,
+          height: r.height,
+          el: host
+        });
+      }
+    }
+    return clusterLines(rects);
+  }
+
+  function collectSelection() {
+    return masksFromLines(collectSelectionLines(), selParity);
+  }
+
+  function collect() {
+    return selectionOn ? collectSelection() : collectPage();
+  }
+
+  function hitMask(x, y) {
+    for (let i = 0; i < lastMasks.length; i++) {
+      const m = lastMasks[i];
+      if (x >= m.left && x <= m.left + m.width && y >= m.top && y <= m.top + m.height) return true;
+    }
+    return false;
+  }
+
+  function onDocPointerDown(e) {
+    if (!selectionOn) return;
+    if (e.button != null && e.button !== 0) return;
+    if (hitMask(e.clientX, e.clientY)) return;
+    endSelection();
+  }
+
+  function bindClickExit() {
+    if (clickBound) return;
+    clickBound = true;
+    document.addEventListener("mousedown", onDocPointerDown, { capture: true, passive: true });
+  }
+
+  function unbindClickExit() {
+    if (!clickBound) return;
+    clickBound = false;
+    document.removeEventListener("mousedown", onDocPointerDown, { capture: true });
+  }
+
+  function startSelTimer() {
+    stopSelTimer();
+    selTimer = scheduleInterval(() => {
+      if (!selectionOn) return;
+      selParity = selParity ? 0 : 1;
+      update();
+    }, SEL_SWAP_MS);
+  }
+
+  function stopSelTimer() {
+    if (selTimer || selTimer === 0) {
+      clearScheduled(selTimer);
+      selTimer = 0;
+    }
+  }
+
+  function maskSelection() {
+    const sel = window.getSelection && window.getSelection();
+    const ranges = [];
+    if (sel) {
+      for (let i = 0; i < sel.rangeCount; i++) {
+        const r = sel.getRangeAt(i);
+        if (r && !r.collapsed) ranges.push(r.cloneRange());
+      }
+    }
+    if (!ranges.length) return false;
+    selRanges = ranges;
+    selectionOn = true;
+    selParity = 0;
+    bindSharedListeners();
+    bindClickExit();
+    startSelTimer();
+    ensureRoot();
+    update();
+    startFlow();
+    reportState();
+    return true;
+  }
+
+  function endSelection() {
+    if (!selectionOn) return;
+    selectionOn = false;
+    selRanges = [];
+    selParity = 0;
+    stopSelTimer();
+    unbindClickExit();
+    if (on) {
+      update();
+      startFlow();
+    } else {
+      teardownOverlay();
+    }
+    reportState();
+  }
+
   function update() {
-    if (!on) return;
+    if (!selectionOn && !on) return;
     updating = true;
     try {
       ensureRoot();
-      applyClips(collect());
+      applyClips(selectionOn ? collectSelection() : collectPage());
     } finally {
       updating = false;
     }
@@ -502,10 +721,13 @@
       if (!msg || !msg.type) return;
       if (msg.type === "toggle") toggle();
       else if (msg.type === "swap") swap();
-      else if (msg.type === "setRatio") {
+      else if (msg.type === "maskSelection") {
+        maskSelection();
+        return Promise.resolve({ on, parity, ratio, selectionOn, selParity });
+      } else if (msg.type === "setRatio") {
         setRatio(msg.ratio);
-        return Promise.resolve({ on, parity, ratio });
-      } else if (msg.type === "state") return Promise.resolve({ on, parity, ratio });
+        return Promise.resolve({ on, parity, ratio, selectionOn, selParity });
+      } else if (msg.type === "state") return Promise.resolve({ on, parity, ratio, selectionOn, selParity });
     });
   }
 
@@ -516,12 +738,21 @@
     start,
     stop,
     update,
-    getState() { return { on, parity, ratio, flowPaused }; },
+    getState() { return { on, parity, ratio, flowPaused, selectionOn, selParity }; },
     collect,
     collectLines,
+    collectSelectionLines,
     pause,
     setRatio,
     clampRatio,
+    maskSelection,
+    endSelection,
+    useFakeTimers,
+    advanceFakeTimers,
+    STRIPE_BAR,
+    STRIPE_PERIOD,
+    STRIPE_SPEED,
+    SEL_SWAP_MS,
   };
 
   function bindStorage() {

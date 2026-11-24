@@ -1,5 +1,6 @@
 // ショートカット（パソコン用）を、いまのタブの content.js へ伝える。
 // ツールバーは popup.html で操作する（Android でも同じ）。
+// 選択範囲のコンテキストメニューは menus API があるときだけ（パソコン向け）。
 const api = typeof browser !== "undefined" ? browser : chrome;
 
 async function send(tabId, type) {
@@ -26,6 +27,37 @@ if (api.commands && api.commands.onCommand) {
 
 api.runtime.onMessage.addListener((msg, sender) => {
   if (!msg || msg.type !== "state" || !sender.tab || !sender.tab.id) return;
-  const title = msg.on ? "行の半分マスク（オン）" : "行の半分マスク";
+  const title = msg.on || msg.selectionOn ? "行の半分マスク（オン）" : "行の半分マスク";
   api.action.setTitle({ tabId: sender.tab.id, title });
 });
+
+function bindMenus() {
+  const menus = (api && (api.menus || api.contextMenus)) || null;
+  if (!menus || !menus.create || !menus.onClicked) return;
+  const item = {
+    id: "line-half-mask-selection",
+    title: "選択範囲だけマスク",
+    contexts: ["selection"],
+  };
+  try {
+    if (menus.remove) {
+      const removed = menus.remove(item.id);
+      if (removed && typeof removed.then === "function") {
+        removed.catch(() => {}).finally(() => { try { menus.create(item); } catch (_) {} });
+        menus.onClicked.addListener(onMenuClick);
+        return;
+      }
+    }
+  } catch (_) {}
+  try { menus.create(item); } catch (_) {}
+  menus.onClicked.addListener(onMenuClick);
+}
+
+function onMenuClick(info, tab) {
+  if (!info || info.menuItemId !== "line-half-mask-selection") return;
+  const id = tab && tab.id;
+  if (!id) return;
+  send(id, "maskSelection");
+}
+
+bindMenus();

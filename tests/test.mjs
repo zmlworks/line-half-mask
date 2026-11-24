@@ -350,6 +350,52 @@ async function openPage(browser, url, viewport) {
   check("fromEvent Alt+ArrowUp becomes Alt+Up", up.status === "ok" && up.shortcut === "Alt+Up", up);
 }
 
+{
+  const src = fs.readFileSync(path.join(srcDir, "background.js"), "utf8");
+  function loadBg(browserObj) {
+    const fn = new Function("browser", "chrome", src + "\nreturn true;");
+    return fn(browserObj, browserObj);
+  }
+  const created = [];
+  const clickHandlers = [];
+  const sent = [];
+  const withMenus = {
+    menus: {
+      create(item) { created.push(item); return item.id; },
+      onClicked: { addListener(fn) { clickHandlers.push(fn); } },
+    },
+    tabs: {
+      sendMessage(id, msg) { sent.push({ id, msg }); return Promise.resolve(); },
+      query() { return Promise.resolve([]); },
+    },
+    commands: { onCommand: { addListener() {} } },
+    runtime: { onMessage: { addListener() {} } },
+    action: { setTitle() {} },
+  };
+  let threw = false;
+  try { loadBg(withMenus); } catch (err) { threw = err; }
+  check("background binds menus when the API exists", threw === false, threw && String(threw));
+  const item = created.find((i) => i && i.id === "line-half-mask-selection");
+  check(
+    "selection context menu is labeled 選択範囲だけマスク",
+    !!(item && item.title === "選択範囲だけマスク" && Array.isArray(item.contexts) && item.contexts.includes("selection")),
+    item || created
+  );
+  if (clickHandlers[0]) clickHandlers[0]({ menuItemId: "line-half-mask-selection" }, { id: 9 });
+  check("choosing the selection menu sends maskSelection to the tab", sent.some((s) => s.id === 9 && s.msg && s.msg.type === "maskSelection"), sent);
+
+  let missingThrew = false;
+  try {
+    loadBg({
+      tabs: { sendMessage() { return Promise.resolve(); }, query() { return Promise.resolve([]); } },
+      commands: { onCommand: { addListener() {} } },
+      runtime: { onMessage: { addListener() {} } },
+      action: { setTitle() {} },
+    });
+  } catch (err) { missingThrew = err; }
+  check("background does nothing harmful when menus API is missing (Android)", missingThrew === false, missingThrew && String(missingThrew));
+}
+
 const { server, url } = await startServer();
 const browser = await firefox.launch({
   headless: true,
@@ -383,6 +429,14 @@ await page.waitForTimeout(80);
 const stateA = await page.evaluate(() => window.__lineHalfMask.getState());
 check("start: on with parity 0", stateA.on === true && stateA.parity === 0, stateA);
 check("default mask ratio is 50", stateA.ratio === 50, stateA);
+const stripeConsts = await page.evaluate(() => ({
+  bar: window.__lineHalfMask.STRIPE_BAR,
+  period: window.__lineHalfMask.STRIPE_PERIOD,
+  speed: window.__lineHalfMask.STRIPE_SPEED,
+  swapMs: window.__lineHalfMask.SEL_SWAP_MS,
+}));
+check("stripe defaults are 8px black/white bars at 30 px/s", stripeConsts.bar === 8 && stripeConsts.period === 16 && stripeConsts.speed === 30, stripeConsts);
+check("selection auto-swap interval is 3 seconds", stripeConsts.swapMs === 3000, stripeConsts);
 
 {
   await page.emulateMedia({ reducedMotion: "reduce" });
@@ -805,13 +859,99 @@ if (touchA.supported) {
   fs.rmSync(frameDir, { recursive: true, force: true });
 }
 
+{
+  await page.evaluate(() => {
+    window.__lineHalfMask.pause(true);
+    const el = document.getElementById("p-ja");
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    const sel = getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    window.__lineHalfMask.useFakeTimers();
+    window.__lineHalfMask.maskSelection();
+    window.__lineHalfMask.pause(true);
+  });
+  await page.waitForTimeout(40);
+  const selMeasured = await page.evaluate(measureFn);
+  const jaLines = selMeasured.blocks["p-ja"];
+  const selState = await page.evaluate(() => window.__lineHalfMask.getState());
+  const selMasks = await readMasks(page);
+  const selExpected = expectedMasks(jaLines, 0, selMeasured.viewport, 50);
+  const selMatch = matchMasks(selMasks, selExpected);
+  check("selection mode is on and leaves page-wide armed", selState.selectionOn === true && selState.on === true && selState.selParity === 0, selState);
+  check("selection mode masks only the selected paragraph's lines", selMasks.length === jaLines.length && selMasks.length < selMeasured.all.length, { masks: selMasks.length, ja: jaLines.length, all: selMeasured.all.length });
+  check("selection masks follow the selected lines' boxes (parity 0, local numbering)", selMatch.ok, selMatch);
+  check(
+    "selection mode: first selected line has its bottom half masked",
+    hasMask(selMasks, halfOf(jaLines[0], false)) && !hasMask(selMasks, halfOf(jaLines[0], true))
+  );
+  await page.screenshot({ path: path.join(shotDir, "desktop-selection.png"), fullPage: false });
+
+  await page.evaluate(() => window.__lineHalfMask.advanceFakeTimers(2999));
+  const beforeSwap = await page.evaluate(() => window.__lineHalfMask.getState());
+  check("selection parity stays 0 just before 3 seconds", beforeSwap.selParity === 0 && beforeSwap.selectionOn === true, beforeSwap);
+  await page.evaluate(() => window.__lineHalfMask.advanceFakeTimers(1));
+  const afterSwap = await page.evaluate(() => window.__lineHalfMask.getState());
+  const selMasksSwapped = await readMasks(page);
+  check("selection parity flips at 3 seconds with fake timers", afterSwap.selParity === 1 && afterSwap.selectionOn === true, afterSwap);
+  check(
+    "selection mode: first selected line has its top half masked after the auto-swap",
+    hasMask(selMasksSwapped, halfOf(jaLines[0], true)) && !hasMask(selMasksSwapped, halfOf(jaLines[0], false))
+  );
+  await page.evaluate(() => window.__lineHalfMask.advanceFakeTimers(3000));
+  const afterSecond = await page.evaluate(() => window.__lineHalfMask.getState());
+  check("selection parity returns to 0 after another 3 seconds", afterSecond.selParity === 0 && afterSecond.selectionOn === true, afterSecond);
+
+  const currentSelMasks = await readMasks(page);
+  const inside = currentSelMasks[0];
+  await page.evaluate(() => window.__lineHalfMask.pause(true));
+  await page.mouse.click(inside.left + inside.width / 2, inside.top + inside.height / 2);
+  await page.waitForTimeout(40);
+  const stillOn = await page.evaluate(() => window.__lineHalfMask.getState());
+  check("clicking inside a selection mask keeps the mode on", stillOn.selectionOn === true, stillOn);
+
+  await page.mouse.click(16, 16);
+  await page.waitForTimeout(40);
+  const afterOut = await page.evaluate(() => ({
+    state: window.__lineHalfMask.getState(),
+    masks: window.__lineHalfMask.collect().length,
+  }));
+  const pageMasks = await readMasks(page);
+  check("clicking outside the selection masks ends the mode", afterOut.state.selectionOn === false, afterOut);
+  check("ending selection mode restores page-wide masks when they were on", afterOut.state.on === true && pageMasks.length === selMeasured.all.length, { on: afterOut.state.on, masks: pageMasks.length, all: selMeasured.all.length });
+
+  const firstJa = jaLines[0];
+  await page.evaluate(() => {
+    const el = document.getElementById("p-ja");
+    const text = el.firstChild;
+    const range = document.createRange();
+    range.setStart(text, 0);
+    range.setEnd(text, 4);
+    const sel = getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    window.__lineHalfMask.maskSelection();
+    window.__lineHalfMask.pause(true);
+  });
+  await page.waitForTimeout(40);
+  const partMasks = await readMasks(page);
+  const part = partMasks[0];
+  check(
+    "partial selection masks only the selected horizontal extent, not the full line box",
+    !!(part && partMasks.length === 1 && part.width < firstJa.right - firstJa.left - 8 && Math.abs(part.left - firstJa.left) <= 2),
+    part && { width: part.width, lineWidth: firstJa.right - firstJa.left, left: part.left, lineLeft: firstJa.left, n: partMasks.length }
+  );
+  await page.evaluate(() => window.__lineHalfMask.endSelection());
+}
+
 await page.evaluate(() => window.__lineHalfMask.toggle());
 await page.waitForTimeout(60);
 const off = await page.evaluate(() => ({
   state: window.__lineHalfMask.getState(),
   root: !!document.getElementById("line-half-mask-root"),
 }));
-check("toggle off removes overlay", off.state.on === false && off.root === false, off);
+check("toggle off removes overlay", off.state.on === false && off.root === false && off.state.selectionOn === false, off);
 await page.close();
 
 // ----- mobile-width screenshots and a geometry check -----
