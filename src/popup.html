@@ -104,10 +104,14 @@
   </label>
   <p class="note">50 から 90 までの整数です。</p>
   <label class="stripe">
-    <span>縞の幅（ピクセル）</span>
-    <input id="stripe-width" type="number" min="1" max="16" step="1" value="8">
+    <span>白の幅（ピクセル）</span>
+    <input id="stripe-white" type="number" min="1" max="16" step="1" value="8">
   </label>
-  <p class="note">1 から 16 までの整数です。</p>
+  <label class="stripe">
+    <span>黒の幅（ピクセル）</span>
+    <input id="stripe-black" type="number" min="1" max="16" step="1" value="8">
+  </label>
+  <p class="note">それぞれ 1 から 16 までの整数です。</p>
   <label class="stripe">
     <span>速さ（ピクセル毎秒）</span>
     <input id="stripe-speed" type="number" min="0" max="60" step="1" value="30">
@@ -115,12 +119,9 @@
   <p class="note">0 から 60 までの整数です。0 で止まります。</p>
   <label class="check">
     <input id="random-angle" type="checkbox">
-    <span>線の傾きをランダム</span>
+    <span>線の傾きと流れの左右をランダム</span>
   </label>
-  <label class="check">
-    <input id="random-dir" type="checkbox">
-    <span>進む向きをランダム</span>
-  </label>
+  <p class="note">オフのときは 45 度で、縞を横切る向きに進みます。オンのときは傾きと、法線の左右がランダムになります。</p>
   <section id="shortcuts" hidden>
     <h2>ショートカット</h2>
     <label class="shortcut">

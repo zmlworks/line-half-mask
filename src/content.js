@@ -6,8 +6,8 @@
   const api = typeof browser !== "undefined" ? browser : typeof chrome !== "undefined" ? chrome : null;
   const ROOT_ID = "line-half-mask-root";
   const Z = "2147483647";
-  // 既定は 45度の縞（黒8px＋白8px）、速さ約 30px/s。幅と速さはポップアップで変えられる。
-  // 流れは canvas を毎フレーム描き直す。OS の動きを減らす設定は無視する。
+  // 既定は 45度の縞（白8px＋黒8px）、速さ約 30px/s。白と黒の幅と速さはポップアップで変えられる。
+  // 流れは常に縞の法線方向。canvas を毎フレーム描き直す。OS の動きを減らす設定は無視する。
   const WIDTH_MIN = 1;
   const WIDTH_MAX = 16;
   const WIDTH_DEFAULT = 8;
@@ -15,7 +15,7 @@
   const SPEED_MAX = 60;
   const SPEED_DEFAULT = 30;
   const DEFAULT_STRIPE_ANGLE = -Math.PI / 4;
-  const DEFAULT_FLOW_ANGLE = Math.PI / 4;
+  const DEFAULT_FLOW_SIGN = 1;
   const SEL_SWAP_MS = 3000;
   const RATIO_MIN = 50;
   const RATIO_MAX = 90;
@@ -52,12 +52,12 @@
   let clickBound = false;
   let fakeTimers = null;
   let capturedRanges = [];
-  let stripeWidth = WIDTH_DEFAULT;
+  let stripeWhite = WIDTH_DEFAULT;
+  let stripeBlack = WIDTH_DEFAULT;
   let stripeSpeed = SPEED_DEFAULT;
   let randomAngle = false;
-  let randomDir = false;
   let stripeAngle = DEFAULT_STRIPE_ANGLE;
-  let flowAngle = DEFAULT_FLOW_ANGLE;
+  let flowSign = DEFAULT_FLOW_SIGN;
 
   function clampRatio(v) {
     const n = Math.round(Number(v));
@@ -85,19 +85,28 @@
 
   function toBool(v) { return v === true || v === "true" || v === 1 || v === "1"; }
 
-  function stripePeriod() { return stripeWidth * 2; }
+  function stripePeriod() { return stripeWhite + stripeBlack; }
 
   function rollStripeStyle() {
-    stripeAngle = randomAngle ? Math.random() * Math.PI : DEFAULT_STRIPE_ANGLE;
-    flowAngle = randomDir ? Math.random() * Math.PI * 2 : DEFAULT_FLOW_ANGLE;
+    if (randomAngle) {
+      stripeAngle = Math.random() * Math.PI;
+      flowSign = Math.random() < 0.5 ? -1 : 1;
+    } else {
+      stripeAngle = DEFAULT_STRIPE_ANGLE;
+      flowSign = DEFAULT_FLOW_SIGN;
+    }
   }
 
   function applyStripePrefs(prefs, reroll) {
     if (!prefs) prefs = {};
     let changed = false;
-    if (Object.prototype.hasOwnProperty.call(prefs, "stripeWidth")) {
-      const w = clampWidth(prefs.stripeWidth);
-      if (w !== stripeWidth) { stripeWidth = w; changed = true; }
+    if (Object.prototype.hasOwnProperty.call(prefs, "stripeWhite")) {
+      const w = clampWidth(prefs.stripeWhite);
+      if (w !== stripeWhite) { stripeWhite = w; changed = true; }
+    }
+    if (Object.prototype.hasOwnProperty.call(prefs, "stripeBlack")) {
+      const w = clampWidth(prefs.stripeBlack);
+      if (w !== stripeBlack) { stripeBlack = w; changed = true; }
     }
     if (Object.prototype.hasOwnProperty.call(prefs, "stripeSpeed")) {
       const s = clampSpeed(prefs.stripeSpeed);
@@ -107,13 +116,18 @@
       const v = toBool(prefs.randomAngle);
       if (v !== randomAngle) { randomAngle = v; changed = true; reroll = true; }
     }
-    if (Object.prototype.hasOwnProperty.call(prefs, "randomDir")) {
-      const v = toBool(prefs.randomDir);
-      if (v !== randomDir) { randomDir = v; changed = true; reroll = true; }
-    }
     if (reroll) rollStripeStyle();
     if ((changed || reroll) && (on || selectionOn)) update();
     if (changed) reportState();
+  }
+
+  function setStripeStyle(opts) {
+    if (!opts) return;
+    if (opts.stripeAngle != null && Number.isFinite(Number(opts.stripeAngle))) {
+      stripeAngle = Number(opts.stripeAngle);
+    }
+    if (opts.flowSign != null) flowSign = Number(opts.flowSign) < 0 ? -1 : 1;
+    if (on || selectionOn) update();
   }
 
   function reportState() {
@@ -122,7 +136,7 @@
       api.runtime.sendMessage({
         type: "state",
         on, parity, ratio, selectionOn, selParity,
-        stripeWidth, stripeSpeed, randomAngle, randomDir
+        stripeWhite, stripeBlack, stripeSpeed, randomAngle, flowSign
       });
     } catch (_) {}
   }
@@ -443,8 +457,7 @@
       c.rect(m.left / s, m.top / s, m.width / s, m.height / s);
     }
     c.clip();
-    // 進行方向のうち、縞の周期軸への射影だけを進めて折り返す。
-    // 縞に沿った成分は見た目が変わらないので、飛びのない周期送りになる。
+    // 流れは常に縞の法線（周期軸）。その成分だけを周期で折り返すので継ぎ目が出ない。
     const period = stripePeriod();
     const ax = -Math.sin(stripeAngle);
     const ay = Math.cos(stripeAngle);
@@ -459,9 +472,9 @@
     c.fillStyle = "#000";
     c.fillRect(x0, y0, w, h);
     c.fillStyle = "#fff";
-    const yStart = Math.floor(y0 / period) * period + stripeWidth;
+    const yStart = Math.floor(y0 / period) * period + stripeBlack;
     for (let y = yStart; y < y0 + h; y += period) {
-      c.fillRect(x0, y, w, stripeWidth);
+      c.fillRect(x0, y, w, stripeWhite);
     }
     c.restore();
   }
@@ -479,11 +492,7 @@
     c.clearRect(0, 0, innerWidth, innerHeight);
     if (!lastMasks.length) return;
     const along = (flowElapsed(now) / 1000) * stripeSpeed;
-    const ax = -Math.sin(stripeAngle);
-    const ay = Math.cos(stripeAngle);
-    const fx = Math.cos(flowAngle);
-    const fy = Math.sin(flowAngle);
-    const d = along * (fx * ax + fy * ay);
+    const d = along * flowSign;
     drawStripes(c, d);
   }
 
@@ -781,10 +790,19 @@
     return saved;
   }
 
+  function clearPageSelection() {
+    try {
+      const sel = window.getSelection && window.getSelection();
+      if (sel && sel.removeAllRanges) sel.removeAllRanges();
+    } catch (_) {}
+  }
+
   function maskSelection() {
     const ranges = rangesForMask();
     if (!ranges.length) return false;
     selRanges = ranges;
+    // 青の選択ハイライトが残らないよう、範囲を確保したあとで外す。
+    clearPageSelection();
     selectionOn = true;
     selParity = 0;
     rollStripeStyle();
@@ -840,12 +858,12 @@
         applyStripePrefs(msg, false);
         return Promise.resolve({
           on, parity, ratio, selectionOn, selParity,
-          stripeWidth, stripeSpeed, randomAngle, randomDir, stripeAngle, flowAngle
+          stripeWhite, stripeBlack, stripeSpeed, randomAngle, stripeAngle, flowSign
         });
       } else if (msg.type === "state") {
         return Promise.resolve({
           on, parity, ratio, selectionOn, selParity,
-          stripeWidth, stripeSpeed, randomAngle, randomDir
+          stripeWhite, stripeBlack, stripeSpeed, randomAngle, flowSign
         });
       }
     });
@@ -861,7 +879,7 @@
     getState() {
       return {
         on, parity, ratio, flowPaused, selectionOn, selParity,
-        stripeWidth, stripeSpeed, randomAngle, randomDir, stripeAngle, flowAngle
+        stripeWhite, stripeBlack, stripeSpeed, randomAngle, stripeAngle, flowSign
       };
     },
     collect,
@@ -874,12 +892,14 @@
     clampSpeed,
     applyStripePrefs,
     rollStripeStyle,
+    setStripeStyle,
     maskSelection,
     endSelection,
     captureSelection,
     useFakeTimers,
     advanceFakeTimers,
-    get STRIPE_BAR() { return stripeWidth; },
+    get STRIPE_WHITE() { return stripeWhite; },
+    get STRIPE_BLACK() { return stripeBlack; },
     get STRIPE_PERIOD() { return stripePeriod(); },
     get STRIPE_SPEED() { return stripeSpeed; },
     SEL_SWAP_MS,
@@ -892,19 +912,21 @@
 
   function bindStorage() {
     if (!api || !api.storage || !api.storage.local) return;
-    const keys = ["ratio", "stripeWidth", "stripeSpeed", "randomAngle", "randomDir"];
+    const keys = ["ratio", "stripeWhite", "stripeBlack", "stripeSpeed", "randomAngle"];
     try {
       api.storage.local.get(keys).then((res) => {
         if (!res) return;
         if (res.ratio != null) setRatio(res.ratio);
-        applyStripePrefs({
-          stripeWidth: res.stripeWidth,
-          stripeSpeed: res.stripeSpeed,
-          randomAngle: res.randomAngle,
-          randomDir: res.randomDir,
-        }, false);
-        if (!randomAngle) stripeAngle = DEFAULT_STRIPE_ANGLE;
-        if (!randomDir) flowAngle = DEFAULT_FLOW_ANGLE;
+        const prefs = {};
+        if (res.stripeWhite != null) prefs.stripeWhite = res.stripeWhite;
+        if (res.stripeBlack != null) prefs.stripeBlack = res.stripeBlack;
+        if (res.stripeSpeed != null) prefs.stripeSpeed = res.stripeSpeed;
+        if (res.randomAngle != null) prefs.randomAngle = res.randomAngle;
+        applyStripePrefs(prefs, false);
+        if (!randomAngle) {
+          stripeAngle = DEFAULT_STRIPE_ANGLE;
+          flowSign = DEFAULT_FLOW_SIGN;
+        }
       }).catch(() => {});
     } catch (_) {}
     if (api.storage.onChanged) {
@@ -916,7 +938,7 @@
         }
         const prefs = {};
         let any = false;
-        for (const k of ["stripeWidth", "stripeSpeed", "randomAngle", "randomDir"]) {
+        for (const k of ["stripeWhite", "stripeBlack", "stripeSpeed", "randomAngle"]) {
           if (Object.prototype.hasOwnProperty.call(changes, k)) {
             prefs[k] = changes[k] && changes[k].newValue;
             any = true;

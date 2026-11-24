@@ -210,10 +210,10 @@ ratioInput.addEventListener("keydown", (e) => {
   }
 });
 
-const widthInput = document.getElementById("stripe-width");
+const whiteInput = document.getElementById("stripe-white");
+const blackInput = document.getElementById("stripe-black");
 const speedInput = document.getElementById("stripe-speed");
 const angleInput = document.getElementById("random-angle");
-const dirInput = document.getElementById("random-dir");
 
 function clampWidth(v) {
   const n = Math.round(Number(v));
@@ -232,32 +232,33 @@ function clampSpeed(v) {
 }
 
 async function loadStripe() {
-  let width = 8, speed = 30, randomAngle = false, randomDir = false;
+  let white = 8, black = 8, speed = 30, randomAngle = false;
   try {
     if (api.storage && api.storage.local) {
-      const res = await api.storage.local.get(["stripeWidth", "stripeSpeed", "randomAngle", "randomDir"]);
+      const res = await api.storage.local.get(["stripeWhite", "stripeBlack", "stripeSpeed", "randomAngle"]);
       if (res) {
-        if (res.stripeWidth != null) width = clampWidth(res.stripeWidth);
+        if (res.stripeWhite != null) white = clampWidth(res.stripeWhite);
+        if (res.stripeBlack != null) black = clampWidth(res.stripeBlack);
         if (res.stripeSpeed != null) speed = clampSpeed(res.stripeSpeed);
         randomAngle = !!res.randomAngle;
-        randomDir = !!res.randomDir;
       }
     }
   } catch (_) {}
-  widthInput.value = String(width);
+  whiteInput.value = String(white);
+  blackInput.value = String(black);
   speedInput.value = String(speed);
   angleInput.checked = randomAngle;
-  dirInput.checked = randomDir;
 }
 
 async function commitStripe() {
   const prefs = {
-    stripeWidth: clampWidth(widthInput.value),
+    stripeWhite: clampWidth(whiteInput.value),
+    stripeBlack: clampWidth(blackInput.value),
     stripeSpeed: clampSpeed(speedInput.value),
     randomAngle: !!angleInput.checked,
-    randomDir: !!dirInput.checked,
   };
-  widthInput.value = String(prefs.stripeWidth);
+  whiteInput.value = String(prefs.stripeWhite);
+  blackInput.value = String(prefs.stripeBlack);
   speedInput.value = String(prefs.stripeSpeed);
   try {
     if (api.storage && api.storage.local) await api.storage.local.set(prefs);
@@ -271,11 +272,11 @@ function bindStripeField(el, evs) {
   for (const ev of evs) el.addEventListener(ev, commitStripe);
 }
 
-bindStripeField(widthInput, ["change", "blur"]);
+bindStripeField(whiteInput, ["change", "blur"]);
+bindStripeField(blackInput, ["change", "blur"]);
 bindStripeField(speedInput, ["change", "blur"]);
 angleInput.addEventListener("change", commitStripe);
-dirInput.addEventListener("change", commitStripe);
-for (const el of [widthInput, speedInput]) {
+for (const el of [whiteInput, blackInput, speedInput]) {
   el.addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
       e.preventDefault();

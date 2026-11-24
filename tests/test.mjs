@@ -474,12 +474,13 @@ const stateA = await page.evaluate(() => window.__lineHalfMask.getState());
 check("start: on with parity 0", stateA.on === true && stateA.parity === 0, stateA);
 check("default mask ratio is 50", stateA.ratio === 50, stateA);
 const stripeConsts = await page.evaluate(() => ({
-  bar: window.__lineHalfMask.STRIPE_BAR,
+  white: window.__lineHalfMask.STRIPE_WHITE,
+  black: window.__lineHalfMask.STRIPE_BLACK,
   period: window.__lineHalfMask.STRIPE_PERIOD,
   speed: window.__lineHalfMask.STRIPE_SPEED,
   swapMs: window.__lineHalfMask.SEL_SWAP_MS,
 }));
-check("stripe defaults are 8px black/white bars at 30 px/s", stripeConsts.bar === 8 && stripeConsts.period === 16 && stripeConsts.speed === 30, stripeConsts);
+check("stripe defaults are 8px white and 8px black at 30 px/s", stripeConsts.white === 8 && stripeConsts.black === 8 && stripeConsts.period === 16 && stripeConsts.speed === 30, stripeConsts);
 check("selection auto-swap interval is 3 seconds", stripeConsts.swapMs === 3000, stripeConsts);
 
 {
@@ -911,6 +912,86 @@ if (touchA.supported) {
 
 {
   await page.evaluate(() => {
+    const api = window.__lineHalfMask;
+    api.applyStripePrefs({ stripeWhite: 2, stripeBlack: 1, stripeSpeed: 0, randomAngle: false }, true);
+    api.setStripeStyle({ stripeAngle: 0, flowSign: 1 });
+    api.pause(true);
+  });
+  await page.waitForTimeout(40);
+  const period21 = await page.evaluate(() => window.__lineHalfMask.STRIPE_PERIOD);
+  check("white 2px and black 1px make a period of 3", period21 === 3, period21);
+  const pattern = await page.evaluate(() => {
+    const canvas = document.getElementById("line-half-mask-root");
+    const masks = window.__lineHalfMask.collect();
+    const m = masks && masks[0];
+    if (!canvas || !m) return { ok: false, reason: "no-mask" };
+    const dpr = window.devicePixelRatio || 1;
+    const shown = canvas.getBoundingClientRect().width;
+    const local = canvas.offsetWidth || innerWidth;
+    const scale = (shown > 0 && local > 0) ? shown / local : 1;
+    const ctx = canvas.getContext("2d");
+    const x = Math.floor((m.left + m.width / 2) / scale * dpr);
+    const y0 = Math.floor((m.top + 1) / scale * dpr);
+    const y1 = Math.floor((m.top + m.height - 1) / scale * dpr);
+    const colors = [];
+    for (let y = y0; y < y1; y++) {
+      const p = ctx.getImageData(x, y, 1, 1).data;
+      const r = p[0], g = p[1], b = p[2], a = p[3];
+      let c = "o";
+      if (a > 20 && r < 40 && g < 40 && b < 40) c = "k";
+      else if (a > 20 && r > 215 && g > 215 && b > 215) c = "w";
+      colors.push(c);
+    }
+    const runs = [];
+    for (const c of colors) {
+      if (!runs.length || runs[runs.length - 1].c !== c) runs.push({ c, n: 1 });
+      else runs[runs.length - 1].n += 1;
+    }
+    const interior = runs.length > 2 ? runs.slice(1, -1) : runs;
+    const blacks = interior.filter((r) => r.c === "k").map((r) => r.n);
+    const whites = interior.filter((r) => r.c === "w").map((r) => r.n);
+    const other = interior.some((r) => r.c === "o");
+    const blackN = blacks.length ? blacks[0] : 0;
+    const whiteN = whites.length ? whites[0] : 0;
+    const ok = !other && blacks.length && whites.length &&
+      blacks.every((n) => n === blackN) && whites.every((n) => n === whiteN) &&
+      whiteN === blackN * 2 && blackN > 0;
+    return { ok, blackN, whiteN, runs: runs.slice(0, 8), n: colors.length };
+  });
+  check("horizontal 2px white / 1px black stripes have a seamless 1+2 period", pattern.ok, pattern);
+  await page.evaluate(() => {
+    const api = window.__lineHalfMask;
+    api.setStripeStyle({ stripeAngle: -Math.PI / 4, flowSign: 1 });
+    api.pause(true);
+  });
+  await page.waitForTimeout(40);
+  await page.screenshot({ path: path.join(shotDir, "desktop-stripes-2-1.png"), fullPage: false });
+
+  await page.evaluate(() => {
+    const api = window.__lineHalfMask;
+    api.applyStripePrefs({ stripeWhite: 8, stripeBlack: 8, stripeSpeed: 30, randomAngle: true }, true);
+    api.setStripeStyle({ stripeAngle: Math.PI / 6, flowSign: 1 });
+    api.pause(true);
+  });
+  await page.waitForTimeout(40);
+  const randState = await page.evaluate(() => window.__lineHalfMask.getState());
+  check(
+    "random-angle mode can use a non-45-degree tilt with flow along the normal",
+    Math.abs(randState.stripeAngle - Math.PI / 6) < 1e-9 && randState.flowSign === 1 && randState.randomAngle === true,
+    randState
+  );
+  await page.screenshot({ path: path.join(shotDir, "desktop-random-angle.png"), fullPage: false });
+
+  await page.evaluate(() => {
+    const api = window.__lineHalfMask;
+    api.applyStripePrefs({ stripeWhite: 8, stripeBlack: 8, stripeSpeed: 30, randomAngle: false }, true);
+    api.setStripeStyle({ stripeAngle: -Math.PI / 4, flowSign: 1 });
+    api.pause(true);
+  });
+}
+
+{
+  await page.evaluate(() => {
     window.__lineHalfMask.pause(true);
     const el = document.getElementById("p-ja");
     const range = document.createRange();
@@ -926,6 +1007,11 @@ if (touchA.supported) {
   const selMeasured = await page.evaluate(measureFn);
   const jaLines = selMeasured.blocks["p-ja"];
   const selState = await page.evaluate(() => window.__lineHalfMask.getState());
+  const selCleared = await page.evaluate(() => ({
+    text: getSelection() ? getSelection().toString() : "no-sel",
+    count: getSelection() ? getSelection().rangeCount : -1,
+  }));
+  check("starting selection mode clears the page selection highlight", selCleared.text === "" && selCleared.count === 0 && selState.selectionOn === true, { selCleared, on: selState.selectionOn });
   const selMasks = await readMasks(page);
   const selExpected = expectedMasks(jaLines, 0, selMeasured.viewport, 50);
   const selMatch = matchMasks(selMasks, selExpected);
@@ -1017,27 +1103,37 @@ if (touchA.supported) {
 
   const angles = await page.evaluate(() => {
     const api = window.__lineHalfMask;
-    api.applyStripePrefs({ randomAngle: false, randomDir: false }, true);
-    const off = { angle: api.getState().stripeAngle, dir: api.getState().flowAngle };
-    api.applyStripePrefs({ randomAngle: true, randomDir: true }, true);
-    const a1 = { angle: api.getState().stripeAngle, dir: api.getState().flowAngle };
+    api.applyStripePrefs({ randomAngle: false }, true);
+    const off = { angle: api.getState().stripeAngle, sign: api.getState().flowSign };
+    api.applyStripePrefs({ randomAngle: true }, true);
+    const a1 = { angle: api.getState().stripeAngle, sign: api.getState().flowSign };
     api.swap();
-    const a2 = { angle: api.getState().stripeAngle, dir: api.getState().flowAngle };
-    api.applyStripePrefs({ randomAngle: false, randomDir: false }, true);
-    const reset = { angle: api.getState().stripeAngle, dir: api.getState().flowAngle };
-    return { off, a1, a2, reset, defAngle: -Math.PI / 4, defDir: Math.PI / 4 };
+    const a2 = { angle: api.getState().stripeAngle, sign: api.getState().flowSign };
+    const signs = new Set([a1.sign, a2.sign]);
+    for (let i = 0; i < 16 && signs.size < 2; i++) {
+      api.swap();
+      signs.add(api.getState().flowSign);
+    }
+    api.applyStripePrefs({ randomAngle: false }, true);
+    const reset = { angle: api.getState().stripeAngle, sign: api.getState().flowSign };
+    return {
+      off, a1, a2, reset, signs: [...signs],
+      defAngle: -Math.PI / 4, defSign: 1,
+    };
   });
   check(
-    "random tilt and direction change on swap and reset to 45 degrees when off",
+    "random tilt and normal sign change on swap and reset to 45 degrees when off",
     Math.abs(angles.off.angle - angles.defAngle) < 1e-9 &&
-      Math.abs(angles.off.dir - angles.defDir) < 1e-9 &&
+      angles.off.sign === angles.defSign &&
       Math.abs(angles.a1.angle - angles.defAngle) > 1e-6 &&
-      (Math.abs(angles.a1.angle - angles.a2.angle) > 1e-12 || Math.abs(angles.a1.dir - angles.a2.dir) > 1e-12) &&
+      angles.a1.sign * angles.a1.sign === 1 &&
+      (Math.abs(angles.a1.angle - angles.a2.angle) > 1e-12 || angles.a1.sign !== angles.a2.sign) &&
       Math.abs(angles.reset.angle - angles.defAngle) < 1e-9 &&
-      Math.abs(angles.reset.dir - angles.defDir) < 1e-9,
+      angles.reset.sign === angles.defSign &&
+      !("randomDir" in (angles.off)),
     angles
   );
-  await page.evaluate(() => window.__lineHalfMask.applyStripePrefs({ stripeWidth: 8, stripeSpeed: 30, randomAngle: false, randomDir: false }, true));
+  await page.evaluate(() => window.__lineHalfMask.applyStripePrefs({ stripeWhite: 8, stripeBlack: 8, stripeSpeed: 30, randomAngle: false }, true));
 }
 
 await page.evaluate(() => window.__lineHalfMask.toggle());
@@ -1089,7 +1185,7 @@ await mpage.close();
       window.__commandStore = ${JSON.stringify(store)};
       window.__commandUpdates = [];
       window.__commandResets = [];
-      window.__storage = { ratio: 50, stripeWidth: 8, stripeSpeed: 30, randomAngle: false, randomDir: false };
+      window.__storage = { ratio: 50, stripeWhite: 8, stripeBlack: 8, stripeSpeed: 30, randomAngle: false };
       window.__storageSets = [];
       window.__messages = [];
       const api = {
@@ -1099,7 +1195,7 @@ await mpage.close();
             window.__messages.push(msg);
             if (msg && msg.type === "setRatio") window.__storage.ratio = msg.ratio;
             if (msg && msg.type === "setStripe") Object.assign(window.__storage, msg);
-            return { on: false, parity: 0, ratio: window.__storage.ratio, stripeWidth: window.__storage.stripeWidth, stripeSpeed: window.__storage.stripeSpeed, randomAngle: window.__storage.randomAngle, randomDir: window.__storage.randomDir };
+            return { on: false, parity: 0, ratio: window.__storage.ratio, stripeWhite: window.__storage.stripeWhite, stripeBlack: window.__storage.stripeBlack, stripeSpeed: window.__storage.stripeSpeed, randomAngle: window.__storage.randomAngle };
           },
         },
         storage: {
@@ -1177,52 +1273,63 @@ await mpage.close();
   await popupPage.evaluate(() => document.getElementById("ratio").blur());
   await popupPage.waitForTimeout(80);
   const stripeStart = await popupPage.evaluate(() => ({
-    width: document.getElementById("stripe-width").value,
+    white: document.getElementById("stripe-white").value,
+    black: document.getElementById("stripe-black").value,
     speed: document.getElementById("stripe-speed").value,
     angle: document.getElementById("random-angle").checked,
-    dir: document.getElementById("random-dir").checked,
+    hasDir: !!document.getElementById("random-dir"),
+    label: document.querySelector("#random-angle + span") && document.querySelector("#random-angle + span").textContent,
   }));
-  check("desktop popup shows stripe width 8 and speed 30", stripeStart.width === "8" && stripeStart.speed === "30" && stripeStart.angle === false && stripeStart.dir === false, stripeStart);
-  await popupPage.fill("#stripe-width", "12");
+  check("desktop popup shows white 8, black 8, speed 30, and no separate direction option", stripeStart.white === "8" && stripeStart.black === "8" && stripeStart.speed === "30" && stripeStart.angle === false && stripeStart.hasDir === false, stripeStart);
+  check("desktop popup label mentions tilt and left/right flow", !!(stripeStart.label && stripeStart.label.includes("傾き") && stripeStart.label.includes("左右")), stripeStart.label);
+  await popupPage.fill("#stripe-white", "12");
+  await popupPage.fill("#stripe-black", "4");
   await popupPage.fill("#stripe-speed", "45");
   await popupPage.evaluate(() => {
-    document.getElementById("stripe-width").blur();
+    document.getElementById("stripe-white").blur();
+    document.getElementById("stripe-black").blur();
     document.getElementById("stripe-speed").blur();
     document.getElementById("random-angle").click();
-    document.getElementById("random-dir").click();
   });
   await popupPage.waitForTimeout(80);
   const stripeSaved = await popupPage.evaluate(() => ({
-    width: document.getElementById("stripe-width").value,
+    white: document.getElementById("stripe-white").value,
+    black: document.getElementById("stripe-black").value,
     speed: document.getElementById("stripe-speed").value,
     angle: document.getElementById("random-angle").checked,
-    dir: document.getElementById("random-dir").checked,
     storage: window.__storage,
     messages: window.__messages.filter((m) => m && m.type === "setStripe"),
   }));
   check(
-    "popup saves stripe width, speed, and random flags",
-    stripeSaved.width === "12" && stripeSaved.speed === "45" && stripeSaved.angle === true && stripeSaved.dir === true && stripeSaved.storage.stripeWidth === 12 && stripeSaved.storage.stripeSpeed === 45 && stripeSaved.storage.randomAngle === true && stripeSaved.storage.randomDir === true && stripeSaved.messages.some((m) => m.stripeWidth === 12 && m.randomAngle === true),
+    "popup saves white width, black width, speed, and random tilt",
+    stripeSaved.white === "12" && stripeSaved.black === "4" && stripeSaved.speed === "45" && stripeSaved.angle === true && stripeSaved.storage.stripeWhite === 12 && stripeSaved.storage.stripeBlack === 4 && stripeSaved.storage.stripeSpeed === 45 && stripeSaved.storage.randomAngle === true && !("randomDir" in stripeSaved.storage) && stripeSaved.messages.some((m) => m.stripeWhite === 12 && m.stripeBlack === 4 && m.randomAngle === true),
     stripeSaved
   );
-  await popupPage.fill("#stripe-width", "0");
+  await popupPage.fill("#stripe-white", "0");
+  await popupPage.fill("#stripe-black", "20");
   await popupPage.fill("#stripe-speed", "99");
   await popupPage.evaluate(() => {
-    document.getElementById("stripe-width").blur();
+    document.getElementById("stripe-white").blur();
+    document.getElementById("stripe-black").blur();
     document.getElementById("stripe-speed").blur();
   });
   await popupPage.waitForTimeout(80);
   const stripeClamped = await popupPage.evaluate(() => ({
-    width: document.getElementById("stripe-width").value,
+    white: document.getElementById("stripe-white").value,
+    black: document.getElementById("stripe-black").value,
     speed: document.getElementById("stripe-speed").value,
     storage: window.__storage,
   }));
-  check("popup clamps stripe width 0 to 1 and speed 99 to 60", stripeClamped.width === "1" && stripeClamped.speed === "60" && stripeClamped.storage.stripeWidth === 1 && stripeClamped.storage.stripeSpeed === 60, stripeClamped);
-  await popupPage.fill("#stripe-width", "8");
+  check("popup clamps white 0 to 1, black 20 to 16, and speed 99 to 60", stripeClamped.white === "1" && stripeClamped.black === "16" && stripeClamped.speed === "60" && stripeClamped.storage.stripeWhite === 1 && stripeClamped.storage.stripeBlack === 16 && stripeClamped.storage.stripeSpeed === 60, stripeClamped);
+  await popupPage.fill("#stripe-white", "2");
+  await popupPage.fill("#stripe-black", "1");
   await popupPage.fill("#stripe-speed", "30");
   await popupPage.evaluate(() => {
-    document.getElementById("stripe-width").blur();
+    document.getElementById("stripe-white").blur();
+    document.getElementById("stripe-black").blur();
     document.getElementById("stripe-speed").blur();
+    const box = document.getElementById("random-angle");
+    if (!box.checked) box.click();
   });
   await popupPage.waitForTimeout(80);
   await popupPage.screenshot({ path: path.join(shotDir, "popup-shortcuts.png"), fullPage: true });
@@ -1291,14 +1398,15 @@ await mpage.close();
     hidden: document.getElementById("shortcuts").hidden,
     hasClass: document.body.classList.contains("has-shortcuts"),
     ratio: document.getElementById("ratio") ? document.getElementById("ratio").value : null,
-    width: document.getElementById("stripe-width") ? document.getElementById("stripe-width").value : null,
+    white: document.getElementById("stripe-white") ? document.getElementById("stripe-white").value : null,
+    black: document.getElementById("stripe-black") ? document.getElementById("stripe-black").value : null,
     speed: document.getElementById("stripe-speed") ? document.getElementById("stripe-speed").value : null,
     angle: document.getElementById("random-angle") ? document.getElementById("random-angle").checked : null,
-    dir: document.getElementById("random-dir") ? document.getElementById("random-dir").checked : null,
+    hasDir: !!document.getElementById("random-dir"),
   }));
   check("Android popup hides shortcut settings", androidUi.hidden === true && androidUi.hasClass === false, androidUi);
   check("Android popup shows the ratio field", androidUi.ratio === "50", androidUi);
-  check("Android popup shows stripe width, speed, and random flags", androidUi.width === "8" && androidUi.speed === "30" && androidUi.angle === false && androidUi.dir === false, androidUi);
+  check("Android popup shows white/black widths, speed, and random tilt", androidUi.white === "8" && androidUi.black === "8" && androidUi.speed === "30" && androidUi.angle === false && androidUi.hasDir === false, androidUi);
   await androidPage.close();
 }
 
@@ -1399,8 +1507,7 @@ await mpage.close();
         sel.removeAllRanges();
         sel.addRange(range);
         el.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2, clientX: 80, clientY: 200 }));
-        sel.removeAllRanges();
-        return { ok: true, selectionRemaining: getSelection().toString().length > 0 };`,
+        return { ok: true, selectionRemaining: getSelection().toString().length > 0, selectionLen: getSelection().toString().length };`,
       args: [],
     }));
     menuPath.prep = prep;
@@ -1496,12 +1603,13 @@ await mpage.close();
     try { fs.rmSync(profile, { recursive: true, force: true }); } catch (_) {}
   }
   check(
-    "real add-on menu path: background debugMenuClick masks the captured selection after it is cleared",
+    "real add-on menu path: background debugMenuClick masks and then clears the page selection",
     !!(menuPath.installed === "line.half.mask@kofu.com" &&
-      menuPath.prep && menuPath.prep.selectionRemaining === false &&
+      menuPath.prep && menuPath.prep.selectionRemaining === true &&
       menuPath.res && menuPath.res.ok === true && menuPath.res.selectionOn === true &&
       menuPath.after && menuPath.after.hasRoot && menuPath.after.tag === "CANVAS" &&
-      menuPath.after.width > 0 && menuPath.screenshot),
+      menuPath.after.width > 0 && menuPath.after.selectionRemaining === false &&
+      menuPath.screenshot),
     menuPath
   );
 }
