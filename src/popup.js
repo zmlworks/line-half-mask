@@ -70,6 +70,21 @@ swapBtn.addEventListener("click", async () => {
   }
 });
 
+document.getElementById("mask-selection").addEventListener("click", async () => {
+  try {
+    const res = await send("maskSelection");
+    if (res && res.ok) {
+      status.className = "note";
+      status.textContent = "選択範囲をマスクしました。ほかをタップすると終わります";
+      return;
+    }
+    status.className = "err";
+    status.textContent = "先にページの文字を選択してください";
+  } catch (_) {
+    showError();
+  }
+});
+
 function setShortcutMsg(text, isError) {
   shortcutMsg.textContent = text || "";
   shortcutMsg.className = isError ? "err" : "note";

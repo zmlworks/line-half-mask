@@ -17,6 +17,7 @@
   const DEFAULT_STRIPE_ANGLE = -Math.PI / 4;
   const DEFAULT_FLOW_SIGN = 1;
   const SEL_SWAP_MS = 3000;
+  const CAPTURE_MS = 60000;
   const RATIO_MIN = 50;
   const RATIO_MAX = 90;
   const RATIO_DEFAULT = 50;
@@ -52,6 +53,7 @@
   let clickBound = false;
   let fakeTimers = null;
   let capturedRanges = [];
+  let capturedAt = 0;
   let stripeWhite = WIDTH_DEFAULT;
   let stripeBlack = WIDTH_DEFAULT;
   let stripeSpeed = SPEED_DEFAULT;
@@ -726,16 +728,38 @@
     endSelection();
   }
 
+  // タッチ: スクロールで終わらないよう、短く動かない指離し（タップ）だけを見る。
+  let exitTouch = null;
+  function onExitTouchStart(e) {
+    const t0 = e.touches && e.touches[0];
+    exitTouch = e.touches && e.touches.length === 1 && t0
+      ? { x: t0.clientX, y: t0.clientY, at: Date.now() } : null;
+  }
+  function onExitTouchEnd(e) {
+    const s = exitTouch;
+    exitTouch = null;
+    const t0 = e.changedTouches && e.changedTouches[0];
+    if (!s || !t0 || !selectionOn) return;
+    if (Date.now() - s.at > TAP_MS) return;
+    if (Math.hypot(t0.clientX - s.x, t0.clientY - s.y) > 16) return;
+    if (!hitMask(t0.clientX, t0.clientY)) endSelection();
+  }
+
+  const EXIT_OPTS = { capture: true, passive: true };
   function bindClickExit() {
     if (clickBound) return;
     clickBound = true;
-    document.addEventListener("mousedown", onDocPointerDown, { capture: true, passive: true });
+    document.addEventListener("mousedown", onDocPointerDown, EXIT_OPTS);
+    document.addEventListener("touchstart", onExitTouchStart, EXIT_OPTS);
+    document.addEventListener("touchend", onExitTouchEnd, EXIT_OPTS);
   }
 
   function unbindClickExit() {
     if (!clickBound) return;
     clickBound = false;
-    document.removeEventListener("mousedown", onDocPointerDown, { capture: true });
+    document.removeEventListener("mousedown", onDocPointerDown, EXIT_OPTS);
+    document.removeEventListener("touchstart", onExitTouchStart, EXIT_OPTS);
+    document.removeEventListener("touchend", onExitTouchEnd, EXIT_OPTS);
   }
 
   function startSelTimer() {
@@ -769,13 +793,15 @@
 
   function captureSelection() {
     const ranges = cloneSelectionRanges(window.getSelection && window.getSelection());
-    if (ranges.length) capturedRanges = ranges;
+    if (ranges.length) { capturedRanges = ranges; capturedAt = Date.now(); }
     return ranges;
   }
 
   function rangesForMask() {
     const live = cloneSelectionRanges(window.getSelection && window.getSelection());
     if (live.length) return live;
+    // メニューやポップアップを開くと選択が消えることがあるので、直前の選択を使う。
+    if (Date.now() - capturedAt > CAPTURE_MS) return [];
     const saved = [];
     for (let i = 0; i < capturedRanges.length; i++) {
       const r = capturedRanges[i];

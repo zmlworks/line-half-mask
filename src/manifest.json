@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "行の半分マスク",
-  "version": "0.4.2",
-  "description": "横書きの文書で、奇数行の下半分と偶数行の上半分を白黒の斜め縞で覆います。縞は流れます。選択範囲だけにも使えます。",
+  "version": "0.5.0",
+  "description": "横書きの文書で、奇数行の下半分と偶数行の上半分を白黒の斜め縞で覆います。縞は流れます。選択範囲だけにも使えます。パソコンと Android の Firefox で動きます。",
   "browser_specific_settings": {
     "gecko": {
       "id": "line.half.mask@kofu.com",

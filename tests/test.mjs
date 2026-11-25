@@ -440,6 +440,13 @@ async function openPage(browser, url, viewport) {
   check("background does nothing harmful when menus API is missing (Android)", missingThrew === false, missingThrew && String(missingThrew));
 }
 
+{
+  const man = JSON.parse(fs.readFileSync(path.join(srcDir, "manifest.json"), "utf8"));
+  check("manifest declares Android support and version 0.5.0", man.version === "0.5.0" && !!man.browser_specific_settings.gecko_android && Number(man.browser_specific_settings.gecko_android.strict_min_version) >= 142 && man.browser_specific_settings.gecko.id === "line.half.mask@kofu.com", man.browser_specific_settings);
+  const bgSrc = fs.readFileSync(path.join(srcDir, "background.js"), "utf8");
+  check("background guards commands, menus and scripting with feature checks", /api\.commands && api\.commands\.onCommand/.test(bgSrc) && /menusApi\(\)/.test(bgSrc) && /!api\.scripting \|\| !api\.scripting\.executeScript/.test(bgSrc));
+}
+
 const { server, url } = await startServer();
 const browser = await firefox.launch({
   headless: true,
@@ -1057,6 +1064,62 @@ if (touchA.supported) {
   check("clicking outside the selection masks ends the mode", afterOut.state.selectionOn === false, afterOut);
   check("ending selection mode restores page-wide masks when they were on", afterOut.state.on === true && pageMasks.length === selMeasured.all.length, { on: afterOut.state.on, masks: pageMasks.length, all: selMeasured.all.length });
 
+  // タッチ（Android）: 外側のタップで終わり、スクロール相当の動きや内側のタップでは終わらない。
+  await page.evaluate(() => {
+    const el = document.getElementById("p-ja");
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    const sel = getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    window.__lineHalfMask.maskSelection();
+    window.__lineHalfMask.pause(true);
+  });
+  await page.waitForTimeout(40);
+  const touchProbe = await playGesture(page, [{ type: "start", points: [{ id: 1, x: 16, y: 16 }] }]);
+  if (touchProbe.supported === false) {
+    check("touch tap-outside test needs Touch events", false, touchProbe);
+  } else {
+    await playGesture(page, [{ type: "end", points: [{ id: 1, x: 16, y: 150 }], delayMs: 20 }]);
+    const afterSwipe = await page.evaluate(() => window.__lineHalfMask.getState().selectionOn);
+    check("a touch swipe (scroll) outside does not end selection mode", afterSwipe === true, afterSwipe);
+    const mk = (await readMasks(page))[0];
+    const ix = mk.left + mk.width / 2, iy = mk.top + mk.height / 2;
+    await playGesture(page, [
+      { type: "start", points: [{ id: 1, x: ix, y: iy }] },
+      { type: "end", points: [{ id: 1, x: ix, y: iy }], delayMs: 30 },
+    ]);
+    const afterInside = await page.evaluate(() => window.__lineHalfMask.getState().selectionOn);
+    check("a touch tap inside the mask keeps selection mode", afterInside === true, afterInside);
+    await playGesture(page, [
+      { type: "start", points: [{ id: 1, x: 16, y: 16 }] },
+      { type: "end", points: [{ id: 1, x: 16, y: 16 }], delayMs: 30 },
+    ]);
+    const afterTapOut = await page.evaluate(() => window.__lineHalfMask.getState().selectionOn);
+    check("a touch tap outside the mask ends selection mode (Android)", afterTapOut === false, afterTapOut);
+  }
+
+  // 古い選択は使わない（ポップアップから押したとき、ずっと前の選択を塗らない）。
+  const stale = await page.evaluate(() => {
+    const api = window.__lineHalfMask;
+    const el = document.getElementById("p-ja");
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    const sel = getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    api.captureSelection();
+    sel.removeAllRanges();
+    const fresh = api.maskSelection();
+    api.endSelection();
+    const realNow = Date.now;
+    Date.now = () => realNow() + 61000;
+    const old = api.maskSelection();
+    Date.now = realNow;
+    return { fresh, old };
+  });
+  check("a captured selection is used when fresh and ignored after 60 seconds", stale.fresh === true && stale.old === false, stale);
+
   const firstJa = jaLines[0];
   await page.evaluate(() => {
     const el = document.getElementById("p-ja");
@@ -1195,6 +1258,7 @@ await mpage.close();
             window.__messages.push(msg);
             if (msg && msg.type === "setRatio") window.__storage.ratio = msg.ratio;
             if (msg && msg.type === "setStripe") Object.assign(window.__storage, msg);
+            if (msg && msg.type === "maskSelection") return { ok: !!window.__hasSelection, selectionOn: !!window.__hasSelection };
             return { on: false, parity: 0, ratio: window.__storage.ratio, stripeWhite: window.__storage.stripeWhite, stripeBlack: window.__storage.stripeBlack, stripeSpeed: window.__storage.stripeSpeed, randomAngle: window.__storage.randomAngle };
           },
         },
@@ -1407,6 +1471,17 @@ await mpage.close();
   check("Android popup hides shortcut settings", androidUi.hidden === true && androidUi.hasClass === false, androidUi);
   check("Android popup shows the ratio field", androidUi.ratio === "50", androidUi);
   check("Android popup shows white/black widths, speed, and random tilt", androidUi.white === "8" && androidUi.black === "8" && androidUi.speed === "30" && androidUi.angle === false && androidUi.hasDir === false, androidUi);
+  await androidPage.evaluate(() => { window.__hasSelection = false; });
+  await androidPage.click("#mask-selection");
+  await androidPage.waitForTimeout(60);
+  const noSel = await androidPage.evaluate(() => ({ text: document.getElementById("status").textContent, msgs: window.__messages.filter((m) => m && m.type === "maskSelection").length }));
+  check("Android popup: selection button asks for a selection when none exists", noSel.msgs === 1 && noSel.text.includes("選択"), noSel);
+  await androidPage.evaluate(() => { window.__hasSelection = true; });
+  await androidPage.click("#mask-selection");
+  await androidPage.waitForTimeout(60);
+  const withSel = await androidPage.evaluate(() => ({ text: document.getElementById("status").textContent, msgs: window.__messages.filter((m) => m && m.type === "maskSelection").length }));
+  check("Android popup: selection button sends maskSelection and confirms", withSel.msgs === 2 && withSel.text.includes("マスクしました"), withSel);
+  await androidPage.screenshot({ path: path.join(shotDir, "popup-android.png"), fullPage: true });
   await androidPage.close();
 }
 
