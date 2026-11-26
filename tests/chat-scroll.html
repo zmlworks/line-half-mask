@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>内側スクロールの会話画面（検証用）</title>
+  <style>
+    html, body {
+      margin: 0;
+      height: 100%;
+      overflow: hidden;
+      background: #1a1a1e;
+      color: #ececf1;
+      font: 16px/1.6 "Noto Sans CJK JP", "Noto Sans", sans-serif;
+    }
+    /* 画面全体は固定。会話だけが内側でスクロールする。 */
+    .app {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+    }
+    .topbar {
+      flex: 0 0 52px;
+      display: flex;
+      align-items: center;
+      padding: 0 16px;
+      background: #111114;
+      border-bottom: 1px solid #2a2a30;
+      font-weight: 700;
+    }
+    #thread {
+      flex: 1 1 auto;
+      overflow: auto;
+      padding: 16px 24px 32px;
+    }
+    .bubble {
+      max-width: 640px;
+      margin: 0 0 16px;
+      padding: 12px 16px;
+      background: #2a2b32;
+      border-radius: 16px;
+    }
+    .bubble.user {
+      margin-left: auto;
+      background: #1f3b5b;
+    }
+    .bubble p, .bubble li {
+      margin: 0 0 10px;
+    }
+    .bubble p:last-child, .bubble ul:last-child {
+      margin-bottom: 0;
+    }
+    .bubble ul {
+      margin: 0 0 10px;
+      padding: 0 0 0 1.3em;
+    }
+    code {
+      font-family: ui-monospace, "Noto Sans Mono", monospace;
+      font-size: 0.9em;
+      background: #111114;
+      padding: 0.1em 0.35em;
+      border-radius: 4px;
+    }
+    strong { font-weight: 700; }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <div class="topbar">会話</div>
+    <div id="thread">
+      <div class="bubble user"><p>短い質問です。</p></div>
+      <div class="bubble">
+        <p>これは会話の返答です。行の半分マスクが、各行の半分だけを覆うかを見るための段落です。<strong>太字</strong>や <code>inline code</code> を交えて、行の高さが場所によって少し違うようにしています。</p>
+        <p>二番目の段落です。スクロールしても、塗りの境界が行の中央に残るはずです。文書全体は動かず、この内側の欄だけが動きます。</p>
+        <ul>
+          <li>リストの一行目です。ここも半分が隠れるはずです。</li>
+          <li>リストの二行目は少し長めに書いて、折り返しが出るようにしています。折り返した行も通し番号の続きです。</li>
+        </ul>
+        <p>最後の段落にも <code>getClientRects</code> と <strong>固定レイアウト</strong> の話を書いておきます。ほかのページでは問題なく見えていました。</p>
+      </div>
+      <div class="bubble user"><p>もう少し下までスクロールしたいので、続きをください。</p></div>
+      <div class="bubble">
+        <p>追加の長い返答です。内側のスクロールで位置がずれないことを、この段でも確認します。文を重ねて、画面の外にも行が出るようにします。</p>
+        <p>続く段落です。スクロール量を変えたあとも、奇数行の下半分と偶数行の上半分が、いま見えている行の箱に合うはずです。</p>
+        <p>さらに一段。行の隙間を塗ってしまったり、行の中央からずれたりしないことを見ます。</p>
+        <p>まだ続きます。この検証ページは、固定の画面に内側の会話欄だけがスクロールする構造を模しています。</p>
+        <p>最後の近くです。ここまで来ると、最初の吹き出しは画面の上に隠れます。</p>
+        <p>本当の最後の段落です。スクロール位置を変えてから、マスクの境界を測ります。</p>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // ?mode=shadow … 会話欄を Shadow DOM の中に置く
+    // ?mode=transform … 中身を #mover にまとめ、あとから transform で動かす
+    // ?mode=html-cb … html に transform を付け、fixed の基準をずらす
+    (function () {
+      const mode = new URLSearchParams(location.search).get("mode");
+      if (mode === "html-cb") {
+        document.documentElement.style.transform = "translateY(24px)";
+      }
+      if (mode === "shadow") {
+        const thread = document.getElementById("thread");
+        const host = document.createElement("div");
+        host.id = "shadow-host";
+        host.style.cssText = "flex:1 1 auto;min-height:0;display:flex;flex-direction:column;";
+        thread.parentNode.replaceChild(host, thread);
+        const sh = host.attachShadow({ mode: "open" });
+        sh.appendChild(document.querySelector("style").cloneNode(true));
+        thread.style.flex = "1 1 auto";
+        sh.appendChild(thread);
+      }
+      if (mode === "transform") {
+        const t = document.getElementById("thread");
+        const wrap = document.createElement("div");
+        wrap.id = "mover";
+        while (t.firstChild) wrap.appendChild(t.firstChild);
+        t.appendChild(wrap);
+        t.style.overflow = "hidden";
+      }
+    })();
+  </script>
+</body>
+</html>

@@ -462,7 +462,7 @@ async function openPage(browser, url, viewport) {
 
 {
   const man = JSON.parse(fs.readFileSync(path.join(srcDir, "manifest.json"), "utf8"));
-  check("manifest declares Android support and version 0.6.1", man.version === "0.6.1" && !!man.browser_specific_settings.gecko_android && Number(man.browser_specific_settings.gecko_android.strict_min_version) >= 142 && man.browser_specific_settings.gecko.id === "line.half.mask@kofu.com", man.browser_specific_settings);
+  check("manifest declares Android support and version 0.6.2", man.version === "0.6.2" && !!man.browser_specific_settings.gecko_android && Number(man.browser_specific_settings.gecko_android.strict_min_version) >= 142 && man.browser_specific_settings.gecko.id === "line.half.mask@kofu.com", man.browser_specific_settings);
   const bgSrc = fs.readFileSync(path.join(srcDir, "background.js"), "utf8");
   check("background guards commands, menus and scripting with feature checks", /api\.commands && api\.commands\.onCommand/.test(bgSrc) && /menusApi\(\)/.test(bgSrc) && /!api\.scripting \|\| !api\.scripting\.executeScript/.test(bgSrc));
 }

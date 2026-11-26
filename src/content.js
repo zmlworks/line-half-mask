@@ -54,6 +54,7 @@
   let listenersBound = false;
   let touchBound = false;
   let clickBound = false;
+  let watch = [];
   let fakeTimers = null;
   let capturedRanges = [];
   let capturedAt = 0;
@@ -224,6 +225,7 @@
     if (listenersBound) return;
     listenersBound = true;
     window.addEventListener("scroll", schedule, { capture: true, passive: true });
+    document.addEventListener("scroll", schedule, { capture: true, passive: true });
     window.addEventListener("resize", schedule, { capture: true, passive: true });
     mo = new MutationObserver(onMutations);
     mo.observe(document.documentElement, { subtree: true, childList: true, characterData: true });
@@ -233,6 +235,7 @@
     if (!listenersBound) return;
     listenersBound = false;
     window.removeEventListener("scroll", schedule, { capture: true });
+    document.removeEventListener("scroll", schedule, { capture: true });
     window.removeEventListener("resize", schedule, { capture: true });
     if (mo) { mo.disconnect(); mo = null; }
   }
@@ -443,6 +446,40 @@
     return s > 0 && Number.isFinite(s) ? s : 1;
   }
 
+  // 重ねた canvas の左上。position:fixed でも、html の transform などで
+  // 基準がビューポートでないときは、(0,0) が画面の左上からずれる。
+  function overlayOffset(el) {
+    if (!el) return { x: 0, y: 0, s: 1 };
+    const r = el.getBoundingClientRect();
+    return { x: r.left, y: r.top, s: clientScale(el) };
+  }
+
+  // 画面内の行の要素をいくつか覚えておき、位置が動いたら描き直す。
+  // Shadow DOM の内側スクロールや、transform による移動は scroll 事件が
+  // window まで来ないことがある。
+  function rememberWatch(lines) {
+    watch = [];
+    if (!lines) return;
+    for (let i = 0; i < lines.length; i++) {
+      const l = lines[i];
+      if (!l || !l.el || l.bottom < 0 || l.top > innerHeight) continue;
+      const r = l.el.getBoundingClientRect();
+      watch.push({ el: l.el, top: r.top, left: r.left });
+      if (watch.length >= 3) break;
+    }
+  }
+
+  function watchedMoved() {
+    if (!watch.length) return false;
+    for (let i = 0; i < watch.length; i++) {
+      const w = watch[i];
+      if (!w.el || !w.el.isConnected) return true;
+      const r = w.el.getBoundingClientRect();
+      if (Math.abs(r.top - w.top) > 0.5 || Math.abs(r.left - w.left) > 0.5) return true;
+    }
+    return false;
+  }
+
   function applyClips(masks) {
     lastMasks = masks;
     applyFlow(performance.now());
@@ -454,14 +491,14 @@
     // 以前は pad = width+height だったため、斜めの塗りが途中で切れ、
     // 下の行ほど短く見え、ページ下部はほとんど塗られなかった。
     if (!lastMasks.length) return;
-    const s = clientScale(root);
+    const o = overlayOffset(root);
     c.save();
     c.imageSmoothingEnabled = false;
     c.beginPath();
     for (let i = 0; i < lastMasks.length; i++) {
       const m = lastMasks[i];
       if (m.width <= 0 || m.height <= 0) continue;
-      c.rect(m.left / s, m.top / s, m.width / s, m.height / s);
+      c.rect((m.left - o.x) / o.s, (m.top - o.y) / o.s, m.width / o.s, m.height / o.s);
     }
     c.clip();
     // 流れは常に縞の法線（周期軸）。その成分だけを周期で折り返すので継ぎ目が出ない。
@@ -487,6 +524,7 @@
   }
 
   function flowElapsed(now) {
+    if (flowPaused) return Math.max(0, flowPausedAt - flowT0 - flowPausedMs);
     return Math.max(0, now - flowT0 - flowPausedMs);
   }
 
@@ -505,8 +543,9 @@
 
   function flowTick(now) {
     flowRaf = 0;
-    if ((!(on || selectionOn)) || flowPaused) return;
-    applyFlow(now);
+    if (!(on || selectionOn)) return;
+    if (watchedMoved()) update();
+    else if (!flowPaused) applyFlow(now);
     flowRaf = requestAnimationFrame(flowTick);
   }
 
@@ -539,11 +578,9 @@
       if (flowPaused) return;
       flowPaused = true;
       flowPausedAt = performance.now();
-      if (flowRaf) {
-        cancelAnimationFrame(flowRaf);
-        flowRaf = 0;
-      }
       applyFlow(flowPausedAt);
+      // 縞は止めても、内側スクロールなどで行が動いたら位置は追う。
+      if (!flowRaf) flowRaf = requestAnimationFrame(flowTick);
       return;
     }
     if (!on && !selectionOn) return;
@@ -898,6 +935,7 @@
   // 画面外の行も含め、選択したすべての行を包む四角。原点はその左上。
   function enhBounds(lines) {
     const k = enhK();
+    const o = overlayOffset(enh.canvas);
     let l = Infinity, t = Infinity, r = -Infinity, b = -Infinity;
     for (const x of lines) {
       if (!x) continue;
@@ -907,8 +945,8 @@
       b = Math.max(b, x.bottom);
     }
     if (!Number.isFinite(l)) return { ax: 0, ay: 0, w: 1, h: 1 };
-    const ax = Math.round(l * k), ay = Math.round(t * k);
-    return { ax, ay, w: Math.max(1, Math.round(r * k) - ax), h: Math.max(1, Math.round(b * k) - ay) };
+    const ax = Math.round((l - o.x) * k), ay = Math.round((t - o.y) * k);
+    return { ax, ay, w: Math.max(1, Math.round((r - o.x) * k) - ax), h: Math.max(1, Math.round((b - o.y) * k) - ay) };
   }
 
   function enhApplyBounds(lines) {
@@ -931,11 +969,12 @@
     const pose = e.pose;
     const c0 = pose.hue == null ? ENH.BLACK : ENH.colorAtHue(pose.hue);
     const c1 = pose.hue == null ? ENH.WHITE : ENH.colorAtHue(pose.hue + 180);
+    const o = overlayOffset(e.canvas);
     for (const r of e.rects) {
-      const x0 = Math.max(0, Math.round(r.left * k));
-      const y0 = Math.max(0, Math.round(r.top * k));
-      const x1 = Math.min(W, Math.round((r.left + r.width) * k));
-      const y1 = Math.min(H, Math.round((r.top + r.height) * k));
+      const x0 = Math.max(0, Math.round((r.left - o.x) * k));
+      const y0 = Math.max(0, Math.round((r.top - o.y) * k));
+      const x1 = Math.min(W, Math.round((r.left + r.width - o.x) * k));
+      const y1 = Math.min(H, Math.round((r.top + r.height - o.y) * k));
       const w = x1 - x0, h = y1 - y0;
       if (w <= 0 || h <= 0) continue;
       // 拡張の content script からは、ページ側の ImageData を直接 new せず、canvas から作る。
@@ -971,11 +1010,15 @@
     const lay = enhLayout();
     enh.rects = lay.rects;
     enhApplyBounds(lay.lines);
+    rememberWatch(lay.lines);
     enhDraw();
   }
 
   function enhFrame(now) {
     enh.raf = 0;
+    if (watchedMoved()) {
+      enhRelayout();
+    }
     const p = enhPoseAt((now - enh.t0) / 1000);
     if (enhMoved(enh.drawn, p)) {
       enh.pose = p;
@@ -1010,6 +1053,7 @@
     const lay = enhLayout();
     enh.rects = lay.rects;
     const b = enhApplyBounds(lay.lines);
+    rememberWatch(lay.lines);
     enh.motion = ENH.createMotion(enhCfg, enh.seed, b.w, b.h);
     enh.t0 = t0;
     enh.pose = enhPoseAt(0);
@@ -1039,6 +1083,7 @@
       };
       enh.mo.observe(document.documentElement, { subtree: true, childList: true, characterData: true });
       window.addEventListener("scroll", enhScheduleLayout, { capture: true, passive: true });
+      document.addEventListener("scroll", enhScheduleLayout, { capture: true, passive: true });
       window.addEventListener("resize", enhOnResize, { capture: true, passive: true });
       document.addEventListener("keydown", onEnhKey, true);
       bindClickExit();
@@ -1067,6 +1112,7 @@
     if (e.raf) cancelAnimationFrame(e.raf);
     e.mo.disconnect();
     window.removeEventListener("scroll", enhScheduleLayout, { capture: true });
+    document.removeEventListener("scroll", enhScheduleLayout, { capture: true });
     window.removeEventListener("resize", enhOnResize, { capture: true });
     document.removeEventListener("keydown", onEnhKey, true);
     e.canvas.remove();
@@ -1099,7 +1145,9 @@
     updating = true;
     try {
       ensureRoot();
-      applyClips(selectionOn ? collectSelection() : collectPage());
+      const lines = selectionOn ? collectSelectionLines() : collectLines();
+      applyClips(masksFromLines(lines, selectionOn ? selParity : parity));
+      rememberWatch(lines);
     } finally {
       updating = false;
     }
