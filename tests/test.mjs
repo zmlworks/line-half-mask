@@ -25,7 +25,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
 const srcDir = path.join(root, "src");
 const shotDir = path.join(root, "screenshots");
-const contentJs = fs.readFileSync(path.join(srcDir, "content.js"), "utf8");
+const contentJs = fs.readFileSync(path.join(srcDir, "enhance.js"), "utf8") + "\n" +
+  fs.readFileSync(path.join(srcDir, "content.js"), "utf8");
 fs.mkdirSync(shotDir, { recursive: true });
 
 const TOL = 1.25;
@@ -398,6 +399,19 @@ async function openPage(browser, url, viewport) {
     sent
   );
 
+  const enhItem = created.find((i) => i && i.id === "line-half-mask-enhance");
+  check(
+    "enhance context menu is labeled 選択範囲に視覚増強 and shows for selections",
+    !!(enhItem && enhItem.title === "選択範囲に視覚増強" && Array.isArray(enhItem.contexts) && enhItem.contexts.includes("selection")),
+    enhItem || created
+  );
+  await Promise.resolve(clickHandlers[0]({ menuItemId: "line-half-mask-enhance", frameId: 2 }, { id: 8 }));
+  check(
+    "choosing the enhance menu sends enhanceSelection to the tab frame",
+    sent.some((s) => s.id === 8 && s.msg && s.msg.type === "enhanceSelection" && s.options && s.options.frameId === 2),
+    sent
+  );
+
   const injections = [];
   const sent2 = [];
   let failOnce = true;
@@ -428,6 +442,12 @@ async function openPage(browser, url, viewport) {
     { injections, sent2, res }
   );
 
+  check(
+    "injection loads enhance.js before content.js",
+    !!(injections[0] && injections[0].files && injections[0].files[0] === "enhance.js" && injections[0].files[1] === "content.js"),
+    injections[0]
+  );
+
   let missingThrew = false;
   try {
     loadBg({
@@ -442,7 +462,7 @@ async function openPage(browser, url, viewport) {
 
 {
   const man = JSON.parse(fs.readFileSync(path.join(srcDir, "manifest.json"), "utf8"));
-  check("manifest declares Android support and version 0.5.0", man.version === "0.5.0" && !!man.browser_specific_settings.gecko_android && Number(man.browser_specific_settings.gecko_android.strict_min_version) >= 142 && man.browser_specific_settings.gecko.id === "line.half.mask@kofu.com", man.browser_specific_settings);
+  check("manifest declares Android support and version 0.6.0", man.version === "0.6.0" && !!man.browser_specific_settings.gecko_android && Number(man.browser_specific_settings.gecko_android.strict_min_version) >= 142 && man.browser_specific_settings.gecko.id === "line.half.mask@kofu.com", man.browser_specific_settings);
   const bgSrc = fs.readFileSync(path.join(srcDir, "background.js"), "utf8");
   check("background guards commands, menus and scripting with feature checks", /api\.commands && api\.commands\.onCommand/.test(bgSrc) && /menusApi\(\)/.test(bgSrc) && /!api\.scripting \|\| !api\.scripting\.executeScript/.test(bgSrc));
 }
@@ -1586,68 +1606,73 @@ await mpage.close();
       args: [],
     }));
     menuPath.prep = prep;
-    await m.send("Marionette:SetContext", { value: "chrome" });
-    const opened = m.val(await m.send("WebDriver:ExecuteScript", {
-      script: `const policy = WebExtensionPolicy.getByID("line.half.mask@kofu.com");
-        const ext = policy.extension;
-        const win = Services.wm.getMostRecentWindow("navigator:browser");
-        const contentTab = win.gBrowser.selectedTab;
-        const tabId = ext.tabManager.getWrapper(contentTab).id;
-        const extUrl = "moz-extension://" + ext.uuid + "/popup.html";
-        const newTab = win.gBrowser.addTab(extUrl, { triggeringPrincipal: ext.principal });
-        win.gBrowser.selectedTab = newTab;
-        win.__lhmContentTab = contentTab;
-        return { tabId, extUrl };`,
-      args: [],
-    }));
-    menuPath.tabId = opened && opened.tabId;
-    await sleep(700);
-    let handles = m.val(await m.send("WebDriver:GetWindowHandles", {}));
-    if (!Array.isArray(handles)) handles = handles ? [handles] : [];
-    menuPath.handles = handles;
-    await m.send("Marionette:SetContext", { value: "content" });
-    let popupUrl = null;
-    for (const h of handles) {
-      try {
-        await m.send("WebDriver:SwitchToWindow", { handle: h, name: h });
-        const loc = String(m.val(await m.send("WebDriver:GetCurrentURL", {})) || "");
-        if (loc.startsWith("moz-extension://")) { popupUrl = loc; break; }
-        if (!popupUrl) popupUrl = loc;
-      } catch (e) { menuPath.switchErr = String(e && e.message || e); }
+    // メニューと同じ経路（背景の debugMenuClick）を、拡張のページから呼んでページへ戻る。
+    async function clickViaBackground(action) {
+      await m.send("Marionette:SetContext", { value: "chrome" });
+      const opened = m.val(await m.send("WebDriver:ExecuteScript", {
+        script: `const policy = WebExtensionPolicy.getByID("line.half.mask@kofu.com");
+          const ext = policy.extension;
+          const win = Services.wm.getMostRecentWindow("navigator:browser");
+          const contentTab = win.gBrowser.selectedTab;
+          const tabId = ext.tabManager.getWrapper(contentTab).id;
+          const extUrl = "moz-extension://" + ext.uuid + "/popup.html";
+          const newTab = win.gBrowser.addTab(extUrl, { triggeringPrincipal: ext.principal });
+          win.gBrowser.selectedTab = newTab;
+          win.__lhmContentTab = contentTab;
+          return { tabId, extUrl };`,
+        args: [],
+      }));
+      await sleep(700);
+      let handles = m.val(await m.send("WebDriver:GetWindowHandles", {}));
+      if (!Array.isArray(handles)) handles = handles ? [handles] : [];
+      await m.send("Marionette:SetContext", { value: "content" });
+      let popupUrl = null;
+      for (const h of handles) {
+        try {
+          await m.send("WebDriver:SwitchToWindow", { handle: h, name: h });
+          const loc = String(m.val(await m.send("WebDriver:GetCurrentURL", {})) || "");
+          if (loc.startsWith("moz-extension://")) { popupUrl = loc; break; }
+          if (!popupUrl) popupUrl = loc;
+        } catch (e) { menuPath.switchErr = String(e && e.message || e); }
+      }
+      const sent = m.val(await m.send("WebDriver:ExecuteAsyncScript", {
+        script: `const cb = arguments[arguments.length - 1];
+          const tabId = arguments[0], action = arguments[1];
+          (async () => {
+            const hasBrowser = typeof browser !== "undefined" && !!(browser.runtime && browser.runtime.sendMessage);
+            let res = null, err = null;
+            if (hasBrowser) {
+              try { res = await browser.runtime.sendMessage({ type: "debugMenuClick", tabId, frameId: 0, action }); }
+              catch (e) { err = String(e && e.message || e); }
+            }
+            cb({ hasBrowser, href: location.href, res, err });
+          })().catch((e) => cb({ err: String(e && e.message || e) }));`,
+        args: [opened && opened.tabId, action],
+      }));
+      await m.send("Marionette:SetContext", { value: "chrome" });
+      await m.send("WebDriver:ExecuteScript", {
+        script: `const win = Services.wm.getMostRecentWindow("navigator:browser");
+          if (win.__lhmContentTab) win.gBrowser.selectedTab = win.__lhmContentTab;
+          return true;`,
+        args: [],
+      });
+      await sleep(300);
+      await m.send("Marionette:SetContext", { value: "content" });
+      for (const h of handles) {
+        try {
+          await m.send("WebDriver:SwitchToWindow", { handle: h, name: h });
+          const loc = String(m.val(await m.send("WebDriver:GetCurrentURL", {})) || "");
+          if (loc.includes("/tests/sample.html")) break;
+        } catch (_) {}
+      }
+      return { opened, handles, popupUrl, sent };
     }
-    menuPath.popupUrl = popupUrl;
-    const sent = m.val(await m.send("WebDriver:ExecuteAsyncScript", {
-      script: `const cb = arguments[arguments.length - 1];
-        const tabId = arguments[0];
-        (async () => {
-          const hasBrowser = typeof browser !== "undefined" && !!(browser.runtime && browser.runtime.sendMessage);
-          let res = null, err = null;
-          if (hasBrowser) {
-            try { res = await browser.runtime.sendMessage({ type: "debugMenuClick", tabId, frameId: 0 }); }
-            catch (e) { err = String(e && e.message || e); }
-          }
-          cb({ hasBrowser, href: location.href, res, err });
-        })().catch((e) => cb({ err: String(e && e.message || e) }));`,
-      args: [opened && opened.tabId],
-    }));
-    menuPath.sent = sent;
-    menuPath.res = sent && sent.res;
-    await m.send("Marionette:SetContext", { value: "chrome" });
-    await m.send("WebDriver:ExecuteScript", {
-      script: `const win = Services.wm.getMostRecentWindow("navigator:browser");
-        if (win.__lhmContentTab) win.gBrowser.selectedTab = win.__lhmContentTab;
-        return true;`,
-      args: [],
-    });
-    await sleep(300);
-    await m.send("Marionette:SetContext", { value: "content" });
-    for (const h of handles) {
-      try {
-        await m.send("WebDriver:SwitchToWindow", { handle: h, name: h });
-        const loc = String(m.val(await m.send("WebDriver:GetCurrentURL", {})) || "");
-        if (loc.includes("/tests/sample.html")) break;
-      } catch (_) {}
-    }
+    const first = await clickViaBackground();
+    menuPath.tabId = first.opened && first.opened.tabId;
+    menuPath.handles = first.handles;
+    menuPath.popupUrl = first.popupUrl;
+    menuPath.sent = first.sent;
+    menuPath.res = first.sent && first.sent.res;
     const after = m.val(await m.send("WebDriver:ExecuteScript", {
       script: `const root = document.getElementById("line-half-mask-root");
         return {
@@ -1668,6 +1693,43 @@ await mpage.close();
         menuPath.screenshot = true;
       }
     }
+    // 視覚増強のメニュー項目も、同じ経路で。マスクを終えてから、もう一度選択して押す。
+    await m.send("WebDriver:ExecuteScript", {
+      script: `document.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0, clientX: 5, clientY: 5 }));
+        const el = document.getElementById("p-ja");
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        const sel = getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+        el.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2, clientX: 80, clientY: 200 }));
+        return true;`,
+      args: [],
+    });
+    const second = await clickViaBackground("enhanceSelection");
+    menuPath.enhanceRes = second.sent && second.sent.res;
+    menuPath.enhanceAfter = m.val(await m.send("WebDriver:ExecuteScript", {
+      script: `const c = document.getElementById("line-half-mask-enhance");
+        if (!c) return { hasCanvas: false, maskRoot: !!document.getElementById("line-half-mask-root") };
+        const d = c.getContext("2d").getImageData(0, 0, c.width, c.height).data;
+        let opaque = 0, odd = 0;
+        for (let i = 0; i < d.length; i += 4) {
+          if (d[i + 3] === 0) continue;
+          opaque++;
+          const v = d[i] === 0 && d[i + 1] === 0 && d[i + 2] === 0 || d[i] === 255 && d[i + 1] === 255 && d[i + 2] === 255;
+          if (!v) odd++;
+        }
+        return { hasCanvas: true, pe: getComputedStyle(c).pointerEvents, opaque, odd,
+          selectionRemaining: !!(getSelection() && getSelection().toString()) };`,
+      args: [],
+    }));
+    {
+      const shot = m.val(await m.send("WebDriver:TakeScreenshot", { full: false, hash: false }));
+      if (typeof shot === "string" && shot.length > 100) {
+        fs.writeFileSync(path.join(shotDir, "desktop-enhance-menu.png"), Buffer.from(shot, "base64"));
+        menuPath.enhanceScreenshot = true;
+      }
+    }
     try { await m.send("WebDriver:DeleteSession", {}); } catch (_) {}
     try { sock.end(); } catch (_) {}
   } catch (err) {
@@ -1686,6 +1748,14 @@ await mpage.close();
       menuPath.after.width > 0 && menuPath.after.selectionRemaining === false &&
       menuPath.screenshot),
     menuPath
+  );
+  check(
+    "real add-on menu path: debugMenuClick with enhanceSelection draws crisp black and white stripes and clears the selection",
+    !!(menuPath.enhanceRes && menuPath.enhanceRes.ok === true && menuPath.enhanceRes.enhanceOn === true &&
+      menuPath.enhanceAfter && menuPath.enhanceAfter.hasCanvas && menuPath.enhanceAfter.pe === "none" &&
+      menuPath.enhanceAfter.opaque > 1000 && menuPath.enhanceAfter.odd === 0 &&
+      menuPath.enhanceAfter.selectionRemaining === false && menuPath.enhanceScreenshot),
+    { res: menuPath.enhanceRes, after: menuPath.enhanceAfter, shot: menuPath.enhanceScreenshot, error: menuPath.error }
   );
 }
 

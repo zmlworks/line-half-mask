@@ -1,10 +1,13 @@
 // 行の半分マスク: ページ全体の視覚行を上から通しで番号づけし、各行の半分を塗る。
 // 通常 (parity=0): 奇数行の下半分と偶数行の上半分。
 // 入れ替え (parity=1): その逆（1行目の上半分も含む）。
+// もうひとつ、選択範囲に視覚増強（斜めの縞を流す）を重ねる機能がある。計算は enhance.js。
 (() => {
   if (globalThis.__lineHalfMask) return;
   const api = typeof browser !== "undefined" ? browser : typeof chrome !== "undefined" ? chrome : null;
   const ROOT_ID = "line-half-mask-root";
+  const ENH_ID = "line-half-mask-enhance";
+  const ENH = globalThis.LineHalfMaskEnhance;
   const Z = "2147483647";
   // 既定は 45度の縞（白8px＋黒8px）、速さ約 30px/s。白と黒の幅と速さはポップアップで変えられる。
   // 流れは常に縞の法線方向。canvas を毎フレーム描き直す。OS の動きを減らす設定は無視する。
@@ -60,6 +63,8 @@
   let randomAngle = false;
   let stripeAngle = DEFAULT_STRIPE_ANGLE;
   let flowSign = DEFAULT_FLOW_SIGN;
+  let enh = null;
+  let enhCfg = ENH ? ENH.defaults() : null;
 
   function clampRatio(v) {
     const n = Math.round(Number(v));
@@ -137,7 +142,7 @@
     try {
       api.runtime.sendMessage({
         type: "state",
-        on, parity, ratio, selectionOn, selParity,
+        on, parity, ratio, selectionOn, selParity, enhanceOn: !!enh,
         stripeWhite, stripeBlack, stripeSpeed, randomAngle, flowSign
       });
     } catch (_) {}
@@ -395,20 +400,20 @@
     });
   }
 
-  function sizeCanvas() {
+  function sizeCanvas(el) {
     const dpr = window.devicePixelRatio || 1;
     const cssW = Math.max(1, innerWidth);
     const cssH = Math.max(1, innerHeight);
     const w = Math.max(1, Math.round(cssW * dpr));
     const h = Math.max(1, Math.round(cssH * dpr));
-    if (root.width !== w || root.height !== h) {
-      root.width = w;
-      root.height = h;
+    if (el.width !== w || el.height !== h) {
+      el.width = w;
+      el.height = h;
     }
-    root.style.width = cssW + "px";
-    root.style.height = cssH + "px";
-    root.style.left = "0px";
-    root.style.top = "0px";
+    el.style.width = cssW + "px";
+    el.style.height = cssH + "px";
+    el.style.left = "0px";
+    el.style.top = "0px";
   }
 
   function ensureRoot() {
@@ -425,15 +430,15 @@
       "position:fixed;left:0;top:0;right:auto;bottom:auto;" +
       "pointer-events:none;z-index:" + Z + ";margin:0;padding:0;border:none;";
     (document.documentElement || document.body).appendChild(root);
-    sizeCanvas();
+    sizeCanvas(root);
   }
 
   // getClientRects は CSS zoom 後の座標。canvas の描画面は zoom 前の
   // レイアウト座標なので、親の zoom で見た表示サイズとの比で割る。
-  function clientScale() {
-    if (!root) return 1;
-    const shown = root.getBoundingClientRect().width;
-    const local = root.offsetWidth || innerWidth;
+  function clientScale(el) {
+    if (!el) return 1;
+    const shown = el.getBoundingClientRect().width;
+    const local = el.offsetWidth || innerWidth;
     const s = shown / local;
     return s > 0 && Number.isFinite(s) ? s : 1;
   }
@@ -449,7 +454,7 @@
     // 以前は pad = width+height だったため、斜めの塗りが途中で切れ、
     // 下の行ほど短く見え、ページ下部はほとんど塗られなかった。
     if (!lastMasks.length) return;
-    const s = clientScale();
+    const s = clientScale(root);
     c.save();
     c.imageSmoothingEnabled = false;
     c.beginPath();
@@ -487,7 +492,7 @@
 
   function applyFlow(now) {
     if (!root) return;
-    sizeCanvas();
+    sizeCanvas(root);
     const dpr = window.devicePixelRatio || 1;
     const c = root.getContext("2d", { alpha: true });
     c.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -679,10 +684,11 @@
 
   // 選択範囲の Range.getClientRects を行にまとめ、各行では選択された横幅だけを塗る
   // （行箱全体ではなく、その部分だけ、という指定に合わせる）。
-  function collectSelectionLines() {
+  function collectSelectionLines(ranges) {
+    if (!ranges) ranges = selRanges;
     const rects = [];
-    for (let i = 0; i < selRanges.length; i++) {
-      const range = selRanges[i];
+    for (let i = 0; i < ranges.length; i++) {
+      const range = ranges[i];
       if (!range || range.collapsed) continue;
       let list;
       try { list = range.getClientRects(); } catch (_) { continue; }
@@ -714,18 +720,24 @@
   }
 
   function hitMask(x, y) {
-    for (let i = 0; i < lastMasks.length; i++) {
-      const m = lastMasks[i];
+    const list = enh ? enh.rects : lastMasks;
+    for (let i = 0; i < list.length; i++) {
+      const m = list[i];
       if (x >= m.left && x <= m.left + m.width && y >= m.top && y <= m.top + m.height) return true;
     }
     return false;
   }
 
+  function endRegion() {
+    endSelection();
+    endEnhance();
+  }
+
   function onDocPointerDown(e) {
-    if (!selectionOn) return;
+    if (!selectionOn && !enh) return;
     if (e.button != null && e.button !== 0) return;
     if (hitMask(e.clientX, e.clientY)) return;
-    endSelection();
+    endRegion();
   }
 
   // タッチ: スクロールで終わらないよう、短く動かない指離し（タップ）だけを見る。
@@ -739,10 +751,10 @@
     const s = exitTouch;
     exitTouch = null;
     const t0 = e.changedTouches && e.changedTouches[0];
-    if (!s || !t0 || !selectionOn) return;
+    if (!s || !t0 || (!selectionOn && !enh)) return;
     if (Date.now() - s.at > TAP_MS) return;
     if (Math.hypot(t0.clientX - s.x, t0.clientY - s.y) > 16) return;
-    if (!hitMask(t0.clientX, t0.clientY)) endSelection();
+    if (!hitMask(t0.clientX, t0.clientY)) endRegion();
   }
 
   const EXIT_OPTS = { capture: true, passive: true };
@@ -755,7 +767,7 @@
   }
 
   function unbindClickExit() {
-    if (!clickBound) return;
+    if (!clickBound || selectionOn || enh) return;
     clickBound = false;
     document.removeEventListener("mousedown", onDocPointerDown, EXIT_OPTS);
     document.removeEventListener("touchstart", onExitTouchStart, EXIT_OPTS);
@@ -826,6 +838,7 @@
   function maskSelection() {
     const ranges = rangesForMask();
     if (!ranges.length) return false;
+    endEnhance();
     selRanges = ranges;
     // 青の選択ハイライトが残らないよう、範囲を確保したあとで外す。
     clearPageSelection();
@@ -858,6 +871,230 @@
     reportState();
   }
 
+  // ---- 視覚増強 ----
+  // 選択範囲の各行（見えている部分）を、視覚増強器と同じ斜めの縞で置き換える。
+  // 縞は選択の先頭行の左上に固定した座標で決めるので、スクロールにも付いてくる。
+  // 1 画素ずつ二色のどちらかを決めて ImageData で描く（縁をぼかさない）。
+  function enhK() {
+    return (window.devicePixelRatio || 1) / clientScale(enh.canvas);
+  }
+
+  function enhLayout() {
+    const lines = collectSelectionLines(enh.ranges);
+    const rects = [];
+    for (const line of lines) {
+      const clip = ancestorClip(line.el);
+      const left = Math.max(line.left, clip.left);
+      const top = Math.max(line.top, clip.top);
+      const right = Math.min(line.right, clip.right);
+      const bottom = Math.min(line.bottom, clip.bottom);
+      if (right - left < 0.5 || bottom - top < 0.5) continue;
+      rects.push({ left, top, width: right - left, height: bottom - top });
+    }
+    return { lines, rects };
+  }
+
+  // 縞の座標系の原点（先頭行の左上）と、回転の軸を決める領域（開始時に見えていた範囲）を求める。
+  function enhAnchor(lines) {
+    const k = enhK();
+    const a = lines[0];
+    if (a) { enh.ax = Math.round(a.left * k); enh.ay = Math.round(a.top * k); }
+  }
+
+  function enhBox(lines, rects) {
+    const k = enhK();
+    let l = Infinity, t = Infinity, r = -Infinity, b = -Infinity;
+    const list = rects.length ? rects : lines.map((x) => ({
+      left: x.left, top: x.top, width: x.right - x.left, height: x.bottom - x.top
+    }));
+    for (const x of list) {
+      l = Math.min(l, x.left); t = Math.min(t, x.top);
+      r = Math.max(r, x.left + x.width); b = Math.max(b, x.top + x.height);
+    }
+    if (!Number.isFinite(l)) return { x: 0, y: 0, w: 1, h: 1 };
+    return {
+      x: Math.round(l * k) - enh.ax, y: Math.round(t * k) - enh.ay,
+      w: Math.max(1, Math.round((r - l) * k)), h: Math.max(1, Math.round((b - t) * k))
+    };
+  }
+
+  function enhDraw() {
+    const e = enh;
+    const W = e.canvas.width, H = e.canvas.height;
+    e.ctx.clearRect(0, 0, W, H);
+    if (!e.rects.length || !e.pose) return;
+    const k = enhK();
+    const pose = e.pose;
+    const c0 = pose.hue == null ? ENH.BLACK : ENH.colorAtHue(pose.hue);
+    const c1 = pose.hue == null ? ENH.WHITE : ENH.colorAtHue(pose.hue + 180);
+    for (const r of e.rects) {
+      const x0 = Math.max(0, Math.round(r.left * k));
+      const y0 = Math.max(0, Math.round(r.top * k));
+      const x1 = Math.min(W, Math.round((r.left + r.width) * k));
+      const y1 = Math.min(H, Math.round((r.top + r.height) * k));
+      const w = x1 - x0, h = y1 - y0;
+      if (w <= 0 || h <= 0) continue;
+      // 拡張の content script からは、ページ側の ImageData を直接 new せず、canvas から作る。
+      const key = w + "x" + h;
+      let img = e.images.get(key);
+      if (!img) {
+        if (e.images.size > 64) e.images.clear();
+        img = e.ctx.createImageData(w, h);
+        e.images.set(key, img);
+      }
+      ENH.fillBands(new Uint32Array(img.data.buffer, 0, w * h), w, h, x0 - e.ax, y0 - e.ay, pose, c0, c1);
+      e.ctx.putImageData(img, x0, y0);
+    }
+    e.drawn = pose;
+  }
+
+  // 姿勢が 1/3 画素以上、または色が 1 度以上動いたときだけ描き直す。
+  function enhMoved(a, b) {
+    if (!a) return true;
+    const period = 2 * b.width;
+    const d = Math.abs(a.offset - b.offset);
+    return Math.min(d, period - d) > 0.34
+      || Math.abs(a.angle - b.angle) * enh.reach > 0.34
+      || Math.hypot(a.px - b.px, a.py - b.py) > 0.34
+      || (a.hue != null && Math.abs(a.hue - b.hue) >= 1);
+  }
+
+  function enhPoseAt(t) {
+    const p = enh.motion.pose(t);
+    p.px += enh.box.x;
+    p.py += enh.box.y;
+    return p;
+  }
+
+  function enhRelayout() {
+    const lay = enhLayout();
+    enhAnchor(lay.lines);
+    enh.rects = lay.rects;
+    enhDraw();
+  }
+
+  function enhFrame(now) {
+    enh.raf = 0;
+    const p = enhPoseAt((now - enh.t0) / 1000);
+    if (enhMoved(enh.drawn, p)) {
+      enh.pose = p;
+      enhDraw();
+    }
+    enh.raf = requestAnimationFrame(enhFrame);
+  }
+
+  function enhScheduleLayout() {
+    if (!enh || enh.scheduled) return;
+    enh.scheduled = true;
+    requestAnimationFrame(() => {
+      if (!enh) return;
+      enh.scheduled = false;
+      enhRelayout();
+    });
+  }
+
+  function onEnhMutations(mutations) {
+    for (const m of mutations) {
+      if (m.target === enh.canvas) continue;
+      enhScheduleLayout();
+      return;
+    }
+  }
+
+  function onEnhKey(e) {
+    if (e.key === "Escape") endEnhance();
+  }
+
+  function enhStartMotion(t0) {
+    const lay = enhLayout();
+    enhAnchor(lay.lines);
+    enh.rects = lay.rects;
+    enh.box = enhBox(lay.lines, lay.rects);
+    enh.reach = Math.hypot(enh.box.w, enh.box.h);
+    enh.motion = ENH.createMotion(enhCfg, enh.seed, enh.box.w, enh.box.h);
+    enh.t0 = t0;
+    enh.pose = enhPoseAt(0);
+    enh.drawn = null;
+    enhDraw();
+  }
+
+  function enhanceSelection() {
+    if (!ENH) return false;
+    const ranges = rangesForMask();
+    if (!ranges.length) return false;
+    endSelection();
+    const again = !!enh;
+    if (!again) {
+      const canvas = document.createElement("canvas");
+      canvas.id = ENH_ID;
+      canvas.setAttribute("aria-hidden", "true");
+      canvas.style.cssText =
+        "position:fixed;left:0;top:0;right:auto;bottom:auto;" +
+        "pointer-events:none;z-index:" + Z + ";margin:0;padding:0;border:none;";
+      (document.documentElement || document.body).appendChild(canvas);
+      sizeCanvas(canvas);
+      enh = {
+        canvas, ctx: canvas.getContext("2d"), ranges, rects: [], images: new Map(), raf: 0, scheduled: false,
+        ax: 0, ay: 0, box: null, reach: 1, motion: null, pose: null, drawn: null, t0: 0,
+        seed: 1, mo: new MutationObserver(onEnhMutations),
+      };
+      enh.mo.observe(document.documentElement, { subtree: true, childList: true, characterData: true });
+      window.addEventListener("scroll", enhScheduleLayout, { capture: true, passive: true });
+      window.addEventListener("resize", enhOnResize, { capture: true, passive: true });
+      document.addEventListener("keydown", onEnhKey, true);
+      bindClickExit();
+    } else {
+      enh.ranges = ranges;
+    }
+    // 青の選択ハイライトが残らないよう、範囲を確保したあとで外す。
+    clearPageSelection();
+    enh.seed = 1 + Math.floor(Math.random() * 0x7FFFFFFF);
+    enhStartMotion(performance.now());
+    if (!enh.raf) enh.raf = requestAnimationFrame(enhFrame);
+    reportState();
+    return true;
+  }
+
+  function enhOnResize() {
+    if (!enh) return;
+    sizeCanvas(enh.canvas);
+    enhScheduleLayout();
+  }
+
+  function endEnhance() {
+    if (!enh) return;
+    const e = enh;
+    enh = null;
+    if (e.raf) cancelAnimationFrame(e.raf);
+    e.mo.disconnect();
+    window.removeEventListener("scroll", enhScheduleLayout, { capture: true });
+    window.removeEventListener("resize", enhOnResize, { capture: true });
+    document.removeEventListener("keydown", onEnhKey, true);
+    e.canvas.remove();
+    unbindClickExit();
+    reportState();
+  }
+
+  // 設定が変わったら、同じ選択のまま新しい設定で動かし直す。
+  function setEnhance(cfg) {
+    if (!ENH) return;
+    enhCfg = ENH.normalize(cfg);
+    if (!enh) return;
+    if (enh.raf) { cancelAnimationFrame(enh.raf); enh.raf = 0; }
+    enhStartMotion(performance.now());
+    enh.raf = requestAnimationFrame(enhFrame);
+  }
+
+  // テスト用: 時間を止めて、開始から t 秒の姿で描く。
+  function enhanceAt(t) {
+    if (!enh) return false;
+    if (enh.raf) { cancelAnimationFrame(enh.raf); enh.raf = 0; }
+    enh.motion = ENH.createMotion(enhCfg, enh.seed, enh.box.w, enh.box.h);
+    enh.pose = enhPoseAt(t);
+    enhDraw();
+    return true;
+  }
+
   function update() {
     if (!selectionOn && !on) return;
     updating = true;
@@ -877,6 +1114,15 @@
       else if (msg.type === "maskSelection") {
         const ok = maskSelection();
         return Promise.resolve({ ok, on, parity, ratio, selectionOn, selParity });
+      } else if (msg.type === "enhanceSelection") {
+        const ok = enhanceSelection();
+        return Promise.resolve({ ok, enhanceOn: !!enh });
+      } else if (msg.type === "endEnhance") {
+        endEnhance();
+        return Promise.resolve({ enhanceOn: !!enh });
+      } else if (msg.type === "setEnhance") {
+        setEnhance(msg.enhance);
+        return Promise.resolve({ enhanceOn: !!enh });
       } else if (msg.type === "setRatio") {
         setRatio(msg.ratio);
         return Promise.resolve({ on, parity, ratio, selectionOn, selParity });
@@ -888,7 +1134,7 @@
         });
       } else if (msg.type === "state") {
         return Promise.resolve({
-          on, parity, ratio, selectionOn, selParity,
+          on, parity, ratio, selectionOn, selParity, enhanceOn: !!enh,
           stripeWhite, stripeBlack, stripeSpeed, randomAngle, flowSign
         });
       }
@@ -904,7 +1150,7 @@
     update,
     getState() {
       return {
-        on, parity, ratio, flowPaused, selectionOn, selParity,
+        on, parity, ratio, flowPaused, selectionOn, selParity, enhanceOn: !!enh,
         stripeWhite, stripeBlack, stripeSpeed, randomAngle, stripeAngle, flowSign
       };
     },
@@ -921,6 +1167,13 @@
     setStripeStyle,
     maskSelection,
     endSelection,
+    enhanceSelection,
+    endEnhance,
+    setEnhance,
+    enhanceAt,
+    enhanceInfo() {
+      return enh && { rects: enh.rects, ax: enh.ax, ay: enh.ay, box: enh.box, pose: enh.pose, cfg: enhCfg };
+    },
     captureSelection,
     useFakeTimers,
     advanceFakeTimers,
@@ -938,11 +1191,12 @@
 
   function bindStorage() {
     if (!api || !api.storage || !api.storage.local) return;
-    const keys = ["ratio", "stripeWhite", "stripeBlack", "stripeSpeed", "randomAngle"];
+    const keys = ["ratio", "stripeWhite", "stripeBlack", "stripeSpeed", "randomAngle", "enhance"];
     try {
       api.storage.local.get(keys).then((res) => {
         if (!res) return;
         if (res.ratio != null) setRatio(res.ratio);
+        if (res.enhance != null) setEnhance(res.enhance);
         const prefs = {};
         if (res.stripeWhite != null) prefs.stripeWhite = res.stripeWhite;
         if (res.stripeBlack != null) prefs.stripeBlack = res.stripeBlack;
@@ -961,6 +1215,9 @@
         if (!changes) return;
         if (Object.prototype.hasOwnProperty.call(changes, "ratio")) {
           setRatio(changes.ratio && changes.ratio.newValue);
+        }
+        if (Object.prototype.hasOwnProperty.call(changes, "enhance")) {
+          setEnhance(changes.enhance && changes.enhance.newValue);
         }
         const prefs = {};
         let any = false;

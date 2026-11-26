@@ -5,6 +5,12 @@
 // 毎回の起動時（トップレベル）で登録する。remove して非同期に作り直すと欠けることがある。
 const api = typeof browser !== "undefined" ? browser : chrome;
 const MENU_ID = "line-half-mask-selection";
+const ENHANCE_MENU_ID = "line-half-mask-enhance";
+// メニュー項目と、content.js へ送るメッセージの対応。
+const MENU_ITEMS = [
+  { id: MENU_ID, title: "選択範囲だけマスク", type: "maskSelection" },
+  { id: ENHANCE_MENU_ID, title: "選択範囲に視覚増強", type: "enhanceSelection" },
+];
 
 function menusApi() {
   return (api && (api.menus || api.contextMenus)) || null;
@@ -24,21 +30,22 @@ async function injectContent(tabId, frameId) {
   const target = { tabId };
   if (frameId != null) target.frameIds = [frameId];
   try {
-    await api.scripting.executeScript({ target, files: ["content.js"] });
+    await api.scripting.executeScript({ target, files: ["enhance.js", "content.js"] });
     return true;
   } catch (_) {
     return false;
   }
 }
 
-async function sendMaskSelection(tabId, frameId) {
+async function sendMaskSelection(tabId, frameId, type) {
   if (!tabId) return { ok: false, reason: "no-tab" };
+  if (!type) type = "maskSelection";
   const opts = frameId != null ? { frameId } : {};
-  let res = await send(tabId, "maskSelection", opts);
+  let res = await send(tabId, type, opts);
   // 受信側がいるなら、選択が空で ok:false でも再注入しない（二重起動を避ける）。
   if (res) return res;
   const injected = await injectContent(tabId, frameId);
-  if (injected) res = await send(tabId, "maskSelection", opts);
+  if (injected) res = await send(tabId, type, opts);
   return res || { ok: false, reason: "no-content-script" };
 }
 
@@ -60,7 +67,7 @@ api.runtime.onMessage.addListener((msg, sender) => {
   if (!msg) return;
   if (msg.type === "state") {
     if (!sender.tab || !sender.tab.id) return;
-    const title = msg.on || msg.selectionOn ? "行の半分マスク（オン）" : "行の半分マスク";
+    const title = msg.on || msg.selectionOn || msg.enhanceOn ? "行の半分マスク（オン）" : "行の半分マスク";
     api.action.setTitle({ tabId: sender.tab.id, title });
     return;
   }
@@ -68,32 +75,31 @@ api.runtime.onMessage.addListener((msg, sender) => {
   if (msg.type === "debugMenuClick") {
     const tabId = msg.tabId != null ? msg.tabId : (sender.tab && sender.tab.id);
     const frameId = msg.frameId != null ? msg.frameId : sender.frameId;
-    return sendMaskSelection(tabId, frameId);
+    return sendMaskSelection(tabId, frameId, msg.action);
   }
 });
 
 function ensureMenu() {
   const menus = menusApi();
   if (!menus || !menus.create) return;
-  try {
-    const created = menus.create({
-      id: MENU_ID,
-      title: "選択範囲だけマスク",
-      contexts: ["selection"],
-    });
-    if (created && typeof created.then === "function") {
-      created.catch(() => {});
+  for (const item of MENU_ITEMS) {
+    try {
+      const created = menus.create({ id: item.id, title: item.title, contexts: ["selection"] });
+      if (created && typeof created.then === "function") {
+        created.catch(() => {});
+      }
+    } catch (_) {
+      // 同じ id が既にある場合など。項目自体は残る。
     }
-  } catch (_) {
-    // 同じ id が既にある場合など。項目自体は残る。
   }
 }
 
 function onMenuClick(info, tab) {
-  if (!info || info.menuItemId !== MENU_ID) return;
+  const item = info && MENU_ITEMS.find((m) => m.id === info.menuItemId);
+  if (!item) return;
   const tabId = (tab && tab.id) != null ? tab.id : info.tabId;
   const frameId = info.frameId;
-  return sendMaskSelection(tabId, frameId);
+  return sendMaskSelection(tabId, frameId, item.type);
 }
 
 function bindMenus() {
@@ -112,4 +118,4 @@ if (api.runtime && api.runtime.onStartup) {
 }
 
 // テストからメニュー経路と同じ sendMaskSelection を呼べるようにする。
-globalThis.__lineHalfMaskBg = { MENU_ID, sendMaskSelection, onMenuClick };
+globalThis.__lineHalfMaskBg = { MENU_ID, ENHANCE_MENU_ID, sendMaskSelection, onMenuClick };

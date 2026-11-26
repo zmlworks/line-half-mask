@@ -87,6 +87,40 @@
       outline: 2px solid #222;
       outline-offset: 1px;
     }
+    .enh {
+      display: block;
+      margin: 0 0 8px;
+    }
+    .enh span, .radios > span {
+      display: block;
+      font-size: 12px;
+      margin: 0 0 3px;
+    }
+    .enh input[type="range"] {
+      display: block;
+      box-sizing: border-box;
+      width: 100%;
+      margin: 0;
+    }
+    .radios {
+      margin: 0 0 8px;
+    }
+    .radios label {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 13px;
+      margin: 0 12px 0 0;
+    }
+    .radios input {
+      margin: 0;
+    }
+    .panel {
+      margin: 0 0 0 0;
+    }
+    .panel[hidden] {
+      display: none;
+    }
     #shortcut-reset {
       font-size: 14px;
       padding: 8px;
@@ -98,6 +132,7 @@
   <button id="toggle" type="button">オンにする</button>
   <button id="swap" type="button">塗りを入れ替え</button>
   <button id="mask-selection" type="button">選択範囲だけマスク</button>
+  <button id="enhance-selection" type="button">選択範囲に視覚増強</button>
   <p id="status" class="note"></p>
   <label class="ratio">
     <span>マスクの割合（パーセント）</span>
@@ -123,6 +158,64 @@
     <span>線の傾きと流れの左右をランダム</span>
   </label>
   <p class="note">オフのときは 45 度で、縞を横切る向きに進みます。オンのときは傾きと、法線の左右がランダムになります。</p>
+  <h2>視覚増強</h2>
+  <p class="note">文字を選んで、右クリックのメニューか上のボタンで始めます。Esc か、範囲の外をクリックかタップで終わります。</p>
+  <label class="check">
+    <input id="enh-auto" type="checkbox">
+    <span>ゆっくりランダムに変化</span>
+  </label>
+  <div id="enh-auto-panel" class="panel">
+    <label class="enh">
+      <span id="enh-dist-v"></span>
+      <input id="enh-dist" type="range" min="0" max="1000" step="1">
+    </label>
+    <p id="enh-hint" class="note"></p>
+  </div>
+  <div id="enh-manual-panel" class="panel">
+    <label class="enh">
+      <span id="enh-speed-v"></span>
+      <input id="enh-speed" type="range" min="0" max="1000" step="1">
+    </label>
+    <div class="radios">
+      <span>流れの向き</span>
+      <label><input type="radio" name="enh-dir" value="1">順方向</label>
+      <label><input type="radio" name="enh-dir" value="-1">逆方向</label>
+    </div>
+    <label class="check">
+      <input id="enh-rotate" type="checkbox">
+      <span>回転させる</span>
+    </label>
+    <div id="enh-rot-panel" class="panel">
+      <label class="enh">
+        <span id="enh-rot-v"></span>
+        <input id="enh-rot" type="range" min="0" max="1000" step="1">
+      </label>
+      <div class="radios">
+        <span>回転の向き</span>
+        <label><input type="radio" name="enh-rotdir" value="1">時計回り</label>
+        <label><input type="radio" name="enh-rotdir" value="-1">反時計回り</label>
+      </div>
+      <label class="check">
+        <input id="enh-wander" type="checkbox">
+        <span>回転の軸を動かす</span>
+      </label>
+    </div>
+  </div>
+  <label class="enh">
+    <span id="enh-width-v"></span>
+    <input id="enh-width" type="range" min="1" max="64" step="1">
+  </label>
+  <div class="radios">
+    <span>色</span>
+    <label><input type="radio" name="enh-color" value="0">白黒</label>
+    <label><input type="radio" name="enh-color" value="1">色モード</label>
+  </div>
+  <div id="enh-color-panel" class="panel">
+    <label class="enh">
+      <span id="enh-hue-v"></span>
+      <input id="enh-hue" type="range" min="0" max="1000" step="1">
+    </label>
+  </div>
   <section id="shortcuts" hidden>
     <h2>ショートカット</h2>
     <label class="shortcut">
@@ -136,6 +229,7 @@
     <button id="shortcut-reset" type="button">既定に戻す</button>
     <p id="shortcut-msg" class="note"></p>
   </section>
+  <script src="enhance.js"></script>
   <script src="shortcuts.js"></script>
   <script src="popup.js"></script>
 </body>

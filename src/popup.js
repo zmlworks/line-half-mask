@@ -1,5 +1,6 @@
 const api = typeof browser !== "undefined" ? browser : chrome;
 const SH = globalThis.LineHalfMaskShortcuts;
+const EN = globalThis.LineHalfMaskEnhance;
 
 const toggleBtn = document.getElementById("toggle");
 const swapBtn = document.getElementById("swap");
@@ -34,7 +35,11 @@ function clampRatio(v) {
   return n;
 }
 
+const enhanceBtn = document.getElementById("enhance-selection");
+
 function showState(state) {
+  enhanceBtn.textContent = state.enhanceOn ? "視覚増強を止める" : "選択範囲に視覚増強";
+  enhanceBtn.classList.toggle("on", !!state.enhanceOn);
   toggleBtn.textContent = state.on ? "オフにする" : "オンにする";
   toggleBtn.classList.toggle("on", !!state.on);
   status.className = "note";
@@ -76,6 +81,29 @@ document.getElementById("mask-selection").addEventListener("click", async () => 
     if (res && res.ok) {
       status.className = "note";
       status.textContent = "選択範囲をマスクしました。ほかをタップすると終わります";
+      return;
+    }
+    status.className = "err";
+    status.textContent = "先にページの文字を選択してください";
+  } catch (_) {
+    showError();
+  }
+});
+
+enhanceBtn.addEventListener("click", async () => {
+  try {
+    const state = await send("state");
+    if (state && state.enhanceOn) {
+      await send("endEnhance");
+      await refresh();
+      return;
+    }
+    const res = await send("enhanceSelection");
+    if (res && res.ok) {
+      status.className = "note";
+      status.textContent = "視覚増強を始めました。ほかをタップすると終わります";
+      enhanceBtn.textContent = "視覚増強を止める";
+      enhanceBtn.classList.add("on");
       return;
     }
     status.className = "err";
@@ -301,7 +329,115 @@ for (const el of [whiteInput, blackInput, speedInput]) {
   });
 }
 
+// ---- 視覚増強の設定 ----
+// 値は storage.local の enhance にまとめて保存し、ページ側が変更を見て動かし直す。
+const enh = {
+  auto: document.getElementById("enh-auto"),
+  autoPanel: document.getElementById("enh-auto-panel"),
+  manualPanel: document.getElementById("enh-manual-panel"),
+  dist: document.getElementById("enh-dist"),
+  distV: document.getElementById("enh-dist-v"),
+  hint: document.getElementById("enh-hint"),
+  speed: document.getElementById("enh-speed"),
+  speedV: document.getElementById("enh-speed-v"),
+  rotate: document.getElementById("enh-rotate"),
+  rotPanel: document.getElementById("enh-rot-panel"),
+  rot: document.getElementById("enh-rot"),
+  rotV: document.getElementById("enh-rot-v"),
+  wander: document.getElementById("enh-wander"),
+  width: document.getElementById("enh-width"),
+  widthV: document.getElementById("enh-width-v"),
+  colorPanel: document.getElementById("enh-color-panel"),
+  hue: document.getElementById("enh-hue"),
+  hueV: document.getElementById("enh-hue-v"),
+};
+let enhCfg = EN.defaults();
+
+function radioValue(name) {
+  const el = document.querySelector('input[name="' + name + '"]:checked');
+  return el ? Number(el.value) : 1;
+}
+
+function setRadio(name, value) {
+  for (const el of document.querySelectorAll('input[name="' + name + '"]')) {
+    el.checked = Number(el.value) === value;
+  }
+}
+
+function showEnhance() {
+  const c = enhCfg;
+  const S = EN.scales;
+  enh.auto.checked = c.auto;
+  enh.autoPanel.hidden = !c.auto;
+  enh.manualPanel.hidden = c.auto;
+  enh.rotPanel.hidden = !c.rotate;
+  enh.colorPanel.hidden = c.color !== 1;
+  enh.dist.value = String(S.progressFromDist(c.dist));
+  enh.distV.textContent = "変化の大きさ " + EN.labels.dist(c.dist);
+  enh.hint.textContent = EN.labels.autoHint(c.dist);
+  enh.speed.value = String(S.progressFromSpeed(c.speed));
+  enh.speedV.textContent = "速さ " + c.speed + " px/秒";
+  setRadio("enh-dir", c.dir);
+  enh.rotate.checked = c.rotate;
+  enh.rot.value = String(S.progressFromRot(c.rotSpeed));
+  enh.rotV.textContent = "回転の速さ " + EN.labels.rot(c.rotSpeed);
+  setRadio("enh-rotdir", c.rotDir);
+  enh.wander.checked = c.wander;
+  const w = c.auto ? c.autoWidth : c.width;
+  enh.width.value = String(w);
+  enh.widthV.textContent = "縞の幅 " + w + " px";
+  setRadio("enh-color", c.color);
+  enh.hue.value = String(S.progressFromHueRate(c.hueRate));
+  enh.hueV.textContent = "色の変化の速さ " + EN.labels.hueRate(c.hueRate);
+}
+
+async function commitEnhance() {
+  const S = EN.scales;
+  const auto = enh.auto.checked;
+  const w = Number(enh.width.value);
+  enhCfg = EN.normalize({
+    auto,
+    speed: S.speedFromProgress(Number(enh.speed.value)),
+    width: auto ? enhCfg.width : w,
+    autoWidth: auto ? w : enhCfg.autoWidth,
+    dir: radioValue("enh-dir"),
+    rotate: enh.rotate.checked,
+    rotSpeed: S.rotFromProgress(Number(enh.rot.value)),
+    rotDir: radioValue("enh-rotdir"),
+    wander: enh.wander.checked,
+    dist: S.distFromProgress(Number(enh.dist.value)),
+    color: radioValue("enh-color"),
+    hueRate: S.hueRateFromProgress(Number(enh.hue.value)),
+  });
+  showEnhance();
+  try {
+    if (api.storage && api.storage.local) await api.storage.local.set({ enhance: enhCfg });
+  } catch (_) {}
+}
+
+async function loadEnhance() {
+  try {
+    if (api.storage && api.storage.local) {
+      const res = await api.storage.local.get("enhance");
+      if (res && res.enhance != null) enhCfg = EN.normalize(res.enhance);
+    }
+  } catch (_) {}
+  showEnhance();
+}
+
+// 自動のオンオフで幅の欄が別の値に切り替わるので、先に切り替えてから保存する。
+enh.auto.addEventListener("change", () => {
+  enhCfg = EN.normalize(Object.assign({}, enhCfg, { auto: enh.auto.checked }));
+  showEnhance();
+  commitEnhance();
+});
+for (const el of document.querySelectorAll(".enh input, #enh-rotate, #enh-wander, input[name^='enh-']")) {
+  if (el === enh.auto) continue;
+  el.addEventListener(el.type === "range" ? "input" : "change", commitEnhance);
+}
+
 refresh().catch(showError);
 setupShortcuts();
 loadRatio();
 loadStripe();
+loadEnhance();
