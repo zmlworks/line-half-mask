@@ -2,7 +2,7 @@
 // ツールバーは popup.html で操作する（Android でも同じ）。
 // 選択範囲のコンテキストメニューは menus API があるときだけ（パソコン向け）。
 // Firefox の MV3 背景はイベントページなので、メニュー作成と onClicked は
-// 毎回の起動時（トップレベル）で登録する。remove して非同期に作り直すと欠けることがある。
+// 毎回の起動時（トップレベル）で登録する。
 const api = typeof browser !== "undefined" ? browser : chrome;
 const MENU_ID = "line-half-mask-selection";
 const MENU_TITLE = "選択範囲に行マスク";
@@ -76,30 +76,23 @@ api.runtime.onMessage.addListener((msg, sender) => {
   }
 });
 
-function createMenu(menus) {
-  try {
-    const created = menus.create({ id: MENU_ID, title: MENU_TITLE, contexts: ["selection"] });
-    if (created && typeof created.then === "function") created.catch(() => {});
-  } catch (_) {}
-}
-
 function ensureMenu() {
   const menus = menusApi();
   if (!menus || !menus.create) return;
+  const add = () => {
+    try {
+      const created = menus.create({ id: MENU_ID, title: MENU_TITLE, contexts: ["selection"] });
+      if (created && typeof created.then === "function") created.catch(() => {});
+    } catch (_) {}
+  };
   try {
-    if (menus.update) {
-      const u = menus.update(MENU_ID, { title: MENU_TITLE, contexts: ["selection"] });
-      if (u && typeof u.then === "function") u.catch(() => createMenu(menus));
-    } else {
-      createMenu(menus);
-    }
+    if (!menus.removeAll) { add(); return; }
+    const r = menus.removeAll();
+    if (r && typeof r.then === "function") r.then(add, add);
+    else add();
   } catch (_) {
-    createMenu(menus);
+    add();
   }
-  try {
-    const r = menus.remove && menus.remove("line-half-mask-enhance");
-    if (r && typeof r.then === "function") r.catch(() => {});
-  } catch (_) {}
 }
 
 function onMenuClick(info, tab) {

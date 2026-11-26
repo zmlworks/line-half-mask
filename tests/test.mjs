@@ -376,17 +376,15 @@ async function openPage(browser, url, viewport) {
     return fn(browserObj, browserObj);
   }
   const created = [];
-  const updated = [];
   const clickHandlers = [];
   const sent = [];
   const installed = [];
   const startups = [];
-  const removed = [];
+  const cleared = [];
   const withMenus = {
     menus: {
       create(item) { created.push(item); return item.id; },
-      update(id, item) { updated.push({ id, ...item }); return Promise.reject(new Error("no item")); },
-      remove(id) { removed.push(id); return Promise.resolve(); },
+      removeAll() { cleared.push(true); return Promise.resolve(); },
       onClicked: { addListener(fn) { clickHandlers.push(fn); } },
     },
     tabs: {
@@ -411,42 +409,14 @@ async function openPage(browser, url, viewport) {
     !!(item && item.title === "選択範囲に行マスク" && Array.isArray(item.contexts) && item.contexts.includes("selection")),
     item || created
   );
-  check("there is only one context menu item", created.length === 1 && !created.some((i) => i && i.id === "line-half-mask-enhance"), created);
-  check("background drops the old enhance menu item if it is still registered", removed.includes("line-half-mask-enhance") && !removed.includes("line-half-mask-selection"), removed);
+  check("there is only one context menu item", created.length === 1, created);
+  check("menus are cleared then recreated (stale items go away)", cleared.length >= 1 && created.length === 1, { cleared: cleared.length, created: created.length });
   check("onClicked is registered at top level (also has onInstalled/onStartup)", clickHandlers.length >= 1 && installed.length >= 1 && startups.length >= 1, { clicks: clickHandlers.length, installed: installed.length, startups: startups.length });
   await Promise.resolve(clickHandlers[0]({ menuItemId: "line-half-mask-selection", frameId: 3 }, { id: 9 }));
   check(
     "choosing the menu sends overlaySelection with a picker and without a fill (uses the current setting)",
     sent.some((s) => s.id === 9 && s.msg && s.msg.type === "overlaySelection" && s.msg.picker === true && s.msg.fill == null && s.options && s.options.frameId === 3),
     sent
-  );
-  const beforeEnhance = sent.length;
-  await Promise.resolve(clickHandlers[0]({ menuItemId: "line-half-mask-enhance", frameId: 2 }, { id: 8 }));
-  check("the old enhance menu id is ignored", sent.length === beforeEnhance, sent.slice(beforeEnhance));
-
-  // 既に項目があるとき（更新）は title を直す。
-  const updatedItems = [];
-  const removed2 = [];
-  const created2 = [];
-  const click2 = [];
-  loadBg({
-    menus: {
-      create(item) { created2.push(item); return item.id; },
-      update(id, item) { updatedItems.push({ id, ...item }); return Promise.resolve(id); },
-      remove(id) { removed2.push(id); return Promise.resolve(); },
-      onClicked: { addListener(fn) { click2.push(fn); } },
-    },
-    tabs: { sendMessage() { return Promise.resolve({ ok: true }); }, query() { return Promise.resolve([]); } },
-    commands: { onCommand: { addListener() {} } },
-    runtime: { onMessage: { addListener() {} }, onInstalled: { addListener() {} }, onStartup: { addListener() {} } },
-    action: { setTitle() {} },
-  });
-  await new Promise((r) => setTimeout(r, 0));
-  check(
-    "on upgrade, the existing menu title is updated to 選択範囲に行マスク and the old enhance item is removed",
-    updatedItems.some((u) => u.id === "line-half-mask-selection" && u.title === "選択範囲に行マスク") &&
-      removed2.includes("line-half-mask-enhance") && created2.length === 0,
-    { updatedItems, removed2, created2 }
   );
 
   const injections = [];
@@ -499,7 +469,7 @@ async function openPage(browser, url, viewport) {
 
 {
   const man = JSON.parse(fs.readFileSync(path.join(srcDir, "manifest.json"), "utf8"));
-  check("manifest declares Android support and version 0.7.1", man.version === "0.7.1" && !!man.browser_specific_settings.gecko_android && Number(man.browser_specific_settings.gecko_android.strict_min_version) >= 142 && man.browser_specific_settings.gecko.id === "line.half.mask@kofu.com", man.browser_specific_settings);
+  check("manifest declares Android support and version 0.7.2", man.version === "0.7.2" && !!man.browser_specific_settings.gecko_android && Number(man.browser_specific_settings.gecko_android.strict_min_version) >= 142 && man.browser_specific_settings.gecko.id === "line.half.mask@kofu.com", man.browser_specific_settings);
   const bgSrc = fs.readFileSync(path.join(srcDir, "background.js"), "utf8");
   check("background guards commands, menus and scripting with feature checks", /api\.commands && api\.commands\.onCommand/.test(bgSrc) && /menusApi\(\)/.test(bgSrc) && /!api\.scripting \|\| !api\.scripting\.executeScript/.test(bgSrc));
 }
