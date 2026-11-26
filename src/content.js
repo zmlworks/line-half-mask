@@ -28,9 +28,10 @@
   const TAP_MS = 600;
   const TWO_TAP_MS = 500;
   const COVERAGES = ["full", "off", "top", "bottom"];
-  const COVERAGE_LABELS = { full: "行全体", off: "オフ", top: "上半分", bottom: "下半分" };
-  // 選択肢の並び（2×2）。矢印キーはこの並びの上下左右に動く。
-  const PICKER_GRID = [["full", "off"], ["top", "bottom"]];
+  const COVERAGE_LABELS = { full: "オン", off: "オフ", top: "上半分", bottom: "下半分" };
+  // 十字の配置。矢印キーはその方向の範囲を直接選ぶ（カーソル移動ではない）。
+  const KEY_COVERAGE = { ArrowLeft: "full", ArrowRight: "off", ArrowUp: "top", ArrowDown: "bottom" };
+  const PAD_ITEMS = [["top", "up"], ["full", "left"], ["off", "right"], ["bottom", "down"]];
   const SKIP_TAGS = new Set([
     "SCRIPT", "STYLE", "NOSCRIPT", "TEXTAREA", "INPUT", "SELECT",
     "OPTION", "SVG", "CANVAS", "VIDEO", "AUDIO", "IMG", "RT", "RP"
@@ -198,6 +199,7 @@
     if (!sel) return;
     sel.coverage = normalizeCoverage(v);
     update();
+    if (sel && sel.coverage !== "off") startFlow();
     pickerRender();
     reportState();
   }
@@ -712,11 +714,20 @@
     if (!active()) return;
     updating = true;
     try {
+      const lines = sel ? collectSelectionLines(sel.ranges) : collectLines();
+      if (sel) sel.boxes = lines.map(clippedBox).filter(Boolean);
+      // オフ: 重ねを外し、範囲を選ぶ窓だけ残す。ページ全体のマスクも、選択が終わるまで出さない。
+      if (sel && sel.coverage === "off") {
+        lastMasks = [];
+        fx = null;
+        if (root) { root.remove(); root = null; }
+        stopFlow();
+        if (picker) pickerPlace();
+        return;
+      }
       ensureRoot();
       sizeCanvas(root);
-      const lines = sel ? collectSelectionLines(sel.ranges) : collectLines();
       lastMasks = masksFromLines(lines, maskPick());
-      if (sel) sel.boxes = lines.map(clippedBox).filter(Boolean);
       fxFit(lines);
       rememberWatch(lines);
       paint(performance.now());
@@ -915,7 +926,7 @@
     if (!sel || inPicker(e)) return;
     if (e.button != null && e.button !== 0) return;
     if (hitMask(e.clientX, e.clientY)) {
-      closePicker();
+      dismissPicker();
       return;
     }
     endSelection();
@@ -938,14 +949,14 @@
     if (!hitMask(t0.clientX, t0.clientY)) endSelection();
   }
 
-  // 選択範囲の重ねを出している間だけ聞く。Esc で終わる。選択肢の窓が開いている間は、
-  // 矢印キー・Enter・Esc を窓の操作に使う。
+  // 選択範囲の重ねを出している間だけ聞く。窓が開いている間は、矢印キーがその方向の範囲を直接選ぶ。
+  // Enter と Esc は窓を閉じる。オフのまま閉じたら重ねも終わる。窓が閉じていれば Esc で終わる。
   function onKey(e) {
     if (!sel || e.isComposing) return;
     if (picker) {
-      const dir = { ArrowUp: [-1, 0], ArrowDown: [1, 0], ArrowLeft: [0, -1], ArrowRight: [0, 1] }[e.key];
-      if (dir) pickerMove(dir[0], dir[1]);
-      else if (e.key === "Enter" || e.key === "Escape") closePicker();
+      const cov = KEY_COVERAGE[e.key];
+      if (cov) setSelCoverage(cov);
+      else if (e.key === "Enter" || e.key === "Escape") dismissPicker();
       else return;
     } else if (e.key === "Escape") {
       endSelection();
@@ -1028,6 +1039,9 @@
       setFill(opts.fill);
       try { api.storage.local.set({ fill }); } catch (_) {}
     }
+    if (opts.coverage) coverage = normalizeCoverage(opts.coverage);
+    // 窓なしでオフから始めると操作する手段がないので、行全体にする。
+    if (!opts.picker && coverage === "off") coverage = "full";
     closePicker();
     sel = { ranges, coverage, boxes: [] };
     // 青の選択ハイライトが残らないよう、範囲を確保したあとで外す。
@@ -1060,7 +1074,7 @@
     reportState();
   }
 
-  // ---- 範囲を選ぶ小さな窓（コンテキストメニューから始めたときだけ） ----
+  // ---- 範囲を選ぶ十字の窓（コンテキストメニューから始めたときだけ） ----
   // 選択範囲の近くに出し、フォーカスは奪わない。操作は window の keydown（キャプチャ）で受ける。
   function openPicker() {
     if (picker || !sel) return;
@@ -1069,31 +1083,36 @@
     host.style.cssText =
       "position:fixed;left:0;top:0;right:auto;bottom:auto;z-index:" + Z + ";margin:0;padding:0;border:none;";
     const shadow = host.attachShadow({ mode: "open" });
+    const style = document.createElement("style");
+    style.textContent =
+      ".pad{display:grid;grid-template-columns:1fr 1fr 1fr;grid-template-areas:'. up .' 'left . right' '. down .';" +
+      "gap:4px;padding:6px;background:#f6f4ef;border:1px solid #888;border-radius:8px;" +
+      "box-shadow:0 2px 10px rgba(0,0,0,.35);width:max-content}" +
+      "button{font:13px/1.2 system-ui,sans-serif;padding:6px 8px;min-width:4.5em;text-align:center;" +
+      "border:1px solid #888;border-radius:6px;cursor:pointer;background:#fff;color:#111}" +
+      "button[aria-checked='true']{background:#111;color:#fff}" +
+      "[data-dir='up']{grid-area:up}[data-dir='left']{grid-area:left}" +
+      "[data-dir='right']{grid-area:right}[data-dir='down']{grid-area:down}";
     const wrap = document.createElement("div");
+    wrap.className = "pad";
     wrap.setAttribute("role", "radiogroup");
     wrap.setAttribute("aria-label", "重ねる範囲");
-    wrap.style.cssText =
-      "display:grid;grid-template-columns:1fr 1fr;gap:4px;padding:6px;background:#f6f4ef;" +
-      "border:1px solid #888;border-radius:8px;box-shadow:0 2px 10px rgba(0,0,0,.35);";
     // ボタンを押してもページの選択やフォーカスが動かないようにする。
     wrap.addEventListener("mousedown", (e) => e.preventDefault());
     const buttons = {};
-    for (const row of PICKER_GRID) {
-      for (const v of row) {
-        const b = document.createElement("button");
-        b.type = "button";
-        b.tabIndex = -1;
-        b.setAttribute("role", "radio");
-        b.dataset.coverage = v;
-        b.textContent = COVERAGE_LABELS[v];
-        b.style.cssText =
-          "font:14px/1.2 system-ui,sans-serif;padding:6px 12px;min-width:5.5em;text-align:center;" +
-          "border:1px solid #888;border-radius:6px;cursor:pointer;";
-        b.addEventListener("click", () => setSelCoverage(v));
-        buttons[v] = b;
-        wrap.appendChild(b);
-      }
+    for (const [v, dir] of PAD_ITEMS) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.tabIndex = -1;
+      b.setAttribute("role", "radio");
+      b.dataset.coverage = v;
+      b.dataset.dir = dir;
+      b.textContent = COVERAGE_LABELS[v];
+      b.addEventListener("click", () => setSelCoverage(v));
+      buttons[v] = b;
+      wrap.appendChild(b);
     }
+    shadow.appendChild(style);
     shadow.appendChild(wrap);
     picker = { host, wrap, buttons };
     (document.documentElement || document.body).appendChild(host);
@@ -1107,34 +1126,28 @@
     picker = null;
   }
 
+  // 窓を閉じる。オフのままだと重ねるものがないので、選択の重ねも終わる。
+  function dismissPicker() {
+    closePicker();
+    if (sel && sel.coverage === "off") endSelection();
+  }
+
   function pickerRender() {
     if (!picker || !sel) return;
     for (const v of COVERAGES) {
       const on1 = v === sel.coverage;
       const b = picker.buttons[v];
       b.setAttribute("aria-checked", on1 ? "true" : "false");
-      b.style.background = on1 ? "#111" : "#fff";
-      b.style.color = on1 ? "#fff" : "#111";
     }
-  }
-
-  // 矢印キー: 2×2 の並びの上下左右に動かす。端では動かない。
-  function pickerMove(dr, dc) {
-    if (!sel) return;
-    let r = 0, c = 0;
-    PICKER_GRID.forEach((row, i) => { const j = row.indexOf(sel.coverage); if (j >= 0) { r = i; c = j; } });
-    r = Math.min(PICKER_GRID.length - 1, Math.max(0, r + dr));
-    c = Math.min(PICKER_GRID[r].length - 1, Math.max(0, c + dc));
-    if (PICKER_GRID[r][c] !== sel.coverage) setSelCoverage(PICKER_GRID[r][c]);
   }
 
   // 見えている最後の行の下に置く。入らなければ最初の行の上、それも無理なら画面の下端。
   function pickerPlace() {
-    if (!picker || !root) return;
+    if (!picker) return;
     const m = 8;
     const r = picker.wrap.getBoundingClientRect();
     const w = r.width, h = r.height;
-    const vis = sel.boxes.filter((b) => b.top + b.height > 0 && b.top < innerHeight);
+    const vis = (sel && sel.boxes || []).filter((b) => b.top + b.height > 0 && b.top < innerHeight);
     let x = innerWidth - w - m, y = innerHeight - h - m;
     if (vis.length) {
       const first = vis[0], last = vis[vis.length - 1];
@@ -1143,11 +1156,10 @@
       if (y + h > innerHeight - m) y = first.top - h - m;
       y = Math.min(Math.max(m, y), innerHeight - h - m);
     }
-    const o = overlayOffset(root);
+    const o = root ? overlayOffset(root) : { x: 0, y: 0, s: 1 };
     picker.host.style.left = (x - o.x) / o.s + "px";
     picker.host.style.top = (y - o.y) / o.s + "px";
   }
-
 
   if (api && api.runtime && api.runtime.onMessage) {
     api.runtime.onMessage.addListener((msg) => {
@@ -1155,8 +1167,11 @@
       if (msg.type === "toggle") toggle();
       else if (msg.type === "swap") swap();
       else if (msg.type === "overlaySelection") {
-        const ok = overlaySelection({ fill: msg.fill, picker: !!msg.picker });
+        const ok = overlaySelection({ fill: msg.fill, coverage: msg.coverage, picker: !!msg.picker });
         return Promise.resolve(Object.assign({ ok }, stateSnapshot()));
+      } else if (msg.type === "setCoverage") {
+        setCoverage(msg.coverage);
+        return Promise.resolve(stateSnapshot());
       } else if (msg.type === "endSelection") {
         endSelection();
         return Promise.resolve(stateSnapshot());

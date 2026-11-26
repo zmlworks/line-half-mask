@@ -100,7 +100,8 @@ const pickerInfo = (page) => page.evaluate(() => {
   const h = document.getElementById("line-half-mask-picker");
   if (!h) return null;
   const sr = h.shadowRoot;
-  const r = sr.firstChild.getBoundingClientRect();
+  const wrap = sr.querySelector(".pad") || sr.lastElementChild;
+  const r = wrap.getBoundingClientRect();
   return {
     labels: [...sr.querySelectorAll("button")].map((b) => b.textContent),
     checked: [...sr.querySelectorAll('[aria-checked="true"]')].map((b) => b.dataset.coverage),
@@ -115,6 +116,7 @@ const readMasks = (page) => page.evaluate(() => window.__lineHalfMask.collect().
 async function paintReport(page, rects) {
   return page.evaluate((rects) => {
     const c = document.getElementById("line-half-mask-root");
+    if (!c) return { inside: 0, filled: 0, outside: 0, painted: false, canvas: false };
     const w = c.width, h = c.height;
     const d = c.getContext("2d").getImageData(0, 0, w, h).data;
     const dpr = w / innerWidth;
@@ -195,7 +197,7 @@ for (const fill of ["black", "enhance"]) {
   await page.close();
 }
 
-// ---------- 範囲を選ぶ窓 ----------
+// ---------- 範囲を選ぶ十字の窓 ----------
 {
   const page = await openPage();
   await page.evaluate(() => document.getElementById("probe").focus());
@@ -205,35 +207,32 @@ for (const fill of ["black", "enhance"]) {
   let p = await pickerInfo(page);
   const boxes = await readMasks(page);
   const lastBottom = Math.max(...boxes.map((b) => b.top + b.height));
-  check("picker opens with 行全体 selected; labels are 行全体 オフ 上半分 下半分",
-    p && p.labels.join() === "行全体,オフ,上半分,下半分" && p.checked.join() === "full", p);
+  check("picker opens as a D-pad with オン selected; labels are 上半分 オン オフ 下半分",
+    p && p.labels.join() === "上半分,オン,オフ,下半分" && p.checked.join() === "full", p);
   check("picker sits just below the last selected line and inside the viewport",
     p && p.rect.top >= lastBottom && p.rect.top - lastBottom < 24 && p.rect.left >= 0 && p.rect.left + p.rect.width <= 800 && p.rect.top + p.rect.height <= 640, { rect: p && p.rect, lastBottom });
   check("opening the picker does not move focus (the input in the page keeps it)", p && p.activeId === "probe" && p.focused === null, p);
   await page.screenshot({ path: path.join(shotDir, "picker-open.png"), clip: { x: 0, y: 120, width: 800, height: 520 } });
 
-  // 矢印キー: 2×2 の並び（行全体 オフ / 上半分 下半分）の上下左右
+  // 矢印キーはその方向の範囲を直接選ぶ（カーソル移動ではない）。
   const press = async (k) => { await page.keyboard.press(k); await page.waitForTimeout(30); return (await pickerInfo(page)).checked.join(); };
   const order = [];
-  order.push(await press("ArrowDown"));  // 行全体 → 上半分
-  order.push(await press("ArrowRight")); // 上半分 → 下半分
-  order.push(await press("ArrowUp"));    // 下半分 → オフ
-  order.push(await press("ArrowLeft"));  // オフ → 行全体
-  check("arrow keys move through the 2×2 grid (↓ top, → bottom, ↑ off, ← full)", order.join() === "top,bottom,off,full", order);
-  const edge = [await press("ArrowUp"), await press("ArrowLeft"), await press("ArrowRight"), await press("ArrowRight")];
-  check("arrow keys stop at the grid edge (no wrap)", edge.join() === "full,full,off,off", edge);
-  await press("ArrowLeft");
-  // 実際の描画が追従する（ライブプレビュー）
+  order.push(await press("ArrowDown"));  // 下半分
+  order.push(await press("ArrowRight")); // オフ
+  order.push(await press("ArrowUp"));    // 上半分
+  order.push(await press("ArrowLeft"));  // オン
+  check("arrow keys apply that direction (↓ 下半分, → オフ, ↑ 上半分, ← オン)", order.join() === "bottom,off,top,full", order);
+
+  const lines = await page.evaluate(() => window.__lineHalfMask.collectSelectionLines().map((l) => ({ top: l.top, bottom: l.bottom })));
   await page.keyboard.press("ArrowDown");
   await page.waitForTimeout(30);
   let m = await readMasks(page);
-  const lines = await page.evaluate(() => window.__lineHalfMask.collectSelectionLines().map((l) => ({ top: l.top, bottom: l.bottom })));
-  check("live preview: ↓ immediately paints only the top half of every line", m.length === lines.length && m.every((x, i) => Math.abs(x.top - lines[i].top) < 1 && Math.abs(x.height - (lines[i].bottom - lines[i].top) / 2) < 1), { n: m.length });
-  await page.keyboard.press("ArrowRight");
+  check("live preview: ↓ immediately paints only the bottom half of every line", m.length === lines.length && m.every((x, i) => Math.abs(x.top + x.height - lines[i].bottom) < 1 && Math.abs(x.height - (lines[i].bottom - lines[i].top) / 2) < 1), { n: m.length });
+  await page.screenshot({ path: path.join(shotDir, "picker-bottom.png"), clip: { x: 0, y: 120, width: 800, height: 520 } });
+  await page.keyboard.press("ArrowUp");
   await page.waitForTimeout(30);
   m = await readMasks(page);
-  check("live preview: → immediately paints only the bottom half of every line", m.length === lines.length && m.every((x, i) => Math.abs(x.top + x.height - lines[i].bottom) < 1 && Math.abs(x.height - (lines[i].bottom - lines[i].top) / 2) < 1), { n: m.length });
-  await page.screenshot({ path: path.join(shotDir, "picker-bottom.png"), clip: { x: 0, y: 120, width: 800, height: 520 } });
+  check("live preview: ↑ immediately paints only the top half of every line", m.length === lines.length && m.every((x, i) => Math.abs(x.top - lines[i].top) < 1 && Math.abs(x.height - (lines[i].bottom - lines[i].top) / 2) < 1), { n: m.length });
   check("arrow keys are consumed while the picker is open (the page's input saw none)", (await page.evaluate(() => window.__keys.length)) === 0, await page.evaluate(() => window.__keys));
   await page.keyboard.press("a");
   check("other keys still reach the page while the picker is open", (await page.evaluate(() => document.getElementById("probe").value)) === "a");
@@ -249,18 +248,35 @@ for (const fill of ["black", "enhance"]) {
   await page.mouse.click(pt.x, pt.y);
   await page.waitForTimeout(30);
   p = await pickerInfo(page);
-  check("clicking オフ selects it, paints nothing, and keeps the picker and the overlay", p && p.checked.join() === "off" && (await readMasks(page)).length === 0 && (await state(page)).selectionOn === true, p && p.checked);
+  const offCanvas = await page.evaluate(() => !!document.getElementById("line-half-mask-root"));
+  check("clicking オフ removes the canvas, keeps the picker open, and leaves the overlay armed",
+    p && p.checked.join() === "off" && (await readMasks(page)).length === 0 && (await state(page)).selectionOn === true && offCanvas === false, { p, offCanvas });
   check("clicking a picker button keeps focus on the page's input", p && p.activeId === "probe" && p.focused === null, p);
+  await page.screenshot({ path: path.join(shotDir, "picker-off.png"), clip: { x: 0, y: 120, width: 800, height: 520 } });
   pt = await btn("top");
   await page.mouse.click(pt.x, pt.y);
   await page.waitForTimeout(30);
   m = await readMasks(page);
-  check("clicking 上半分 paints the top halves", m.length === lines.length && m.every((x, i) => Math.abs(x.top - lines[i].top) < 1 && x.height < 30), { n: m.length });
+  check("clicking 上半分 after オフ brings the canvas back and paints the top halves",
+    m.length === lines.length && m.every((x, i) => Math.abs(x.top - lines[i].top) < 1 && x.height < 30) &&
+      (await page.evaluate(() => !!document.getElementById("line-half-mask-root"))), { n: m.length });
   pt = await btn("full");
   await page.mouse.click(pt.x, pt.y);
   await page.waitForTimeout(30);
 
-  // スクロールに付いてくる
+  // スクロールに付いてくる（オフのときも）
+  pt = await btn("off");
+  await page.mouse.click(pt.x, pt.y);
+  await page.waitForTimeout(30);
+  const beforeOff = (await pickerInfo(page)).rect;
+  await page.mouse.wheel(0, 40);
+  await page.waitForTimeout(200);
+  const afterOffScroll = (await pickerInfo(page)).rect;
+  check("the picker still follows the lines when オフ and the page scrolls", Math.abs((beforeOff.top - afterOffScroll.top) - 40) < 2, { beforeOff, afterOffScroll });
+  await page.keyboard.press("ArrowLeft");
+  await page.waitForTimeout(40);
+  await page.mouse.wheel(0, -40);
+  await page.waitForTimeout(150);
   const before = (await pickerInfo(page)).rect;
   await page.mouse.wheel(0, 40);
   await page.waitForTimeout(200);
@@ -269,10 +285,24 @@ for (const fill of ["black", "enhance"]) {
   await page.mouse.wheel(0, -40);
   await page.waitForTimeout(150);
 
-  // Enter で窓だけ閉じ、重ねは残る。次の Esc で重ねも終わる
+  // オフのまま Enter すると、窓も重ねも終わる
+  await page.keyboard.press("ArrowRight");
+  await page.waitForTimeout(30);
   await page.keyboard.press("Enter");
   await page.waitForTimeout(30);
-  check("Enter closes the picker and keeps the overlay and the choice", (await pickerInfo(page)) === null && (await state(page)).selectionOn === true && (await state(page)).coverage === "full");
+  const offClosed = await page.evaluate(() => ({
+    picker: !!document.getElementById("line-half-mask-picker"),
+    sel: window.__lineHalfMask.getState().selectionOn,
+    canvas: !!document.getElementById("line-half-mask-root"),
+  }));
+  check("Enter while オフ closes the picker and ends the overlay", !offClosed.picker && !offClosed.sel && !offClosed.canvas, offClosed);
+
+  await selectPara(page);
+  await page.evaluate(() => { const a = window.__lineHalfMask; a.overlaySelection({ fill: "black", picker: true }); a.pause(true); });
+  await page.waitForTimeout(30);
+  await page.keyboard.press("Enter");
+  await page.waitForTimeout(30);
+  check("Enter (coverage オン) closes the picker and keeps the overlay and the choice", (await pickerInfo(page)) === null && (await state(page)).selectionOn === true && (await state(page)).coverage === "full");
   await page.keyboard.press("ArrowDown");
   check("with the picker closed, arrow keys go back to the page", (await page.evaluate(() => window.__keys.slice(-1)[0])) === "ArrowDown");
   await page.keyboard.press("Escape");
@@ -283,7 +313,6 @@ for (const fill of ["black", "enhance"]) {
     picker: !!document.getElementById("line-half-mask-picker"),
   }));
   check("Esc (picker closed) ends the overlay and removes the canvas", ended.sel === false && !ended.canvas && !ended.picker, ended);
-  // 後始末: キーを奪わない
   const after = await page.evaluate(() => {
     const ev = new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true });
     const notPrevented = window.dispatchEvent(ev);

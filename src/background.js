@@ -5,12 +5,7 @@
 // 毎回の起動時（トップレベル）で登録する。remove して非同期に作り直すと欠けることがある。
 const api = typeof browser !== "undefined" ? browser : chrome;
 const MENU_ID = "line-half-mask-selection";
-const ENHANCE_MENU_ID = "line-half-mask-enhance";
-// メニュー項目と、選択範囲に重ねる塗りの種類（黒塗り／視覚増強）の対応。
-const MENU_ITEMS = [
-  { id: MENU_ID, title: "選択範囲を黒塗り", fill: "black" },
-  { id: ENHANCE_MENU_ID, title: "選択範囲に視覚増強", fill: "enhance" },
-];
+const MENU_TITLE = "選択範囲に行マスク";
 
 function menusApi() {
   return (api && (api.menus || api.contextMenus)) || null;
@@ -37,16 +32,17 @@ async function injectContent(tabId, frameId) {
   }
 }
 
-// メニューから: 選択範囲に重ね、範囲を選ぶ小さな窓を出す。
-async function sendOverlay(tabId, frameId, fill) {
+// メニューから: いま選んでいる塗りで選択範囲に重ね、範囲を選ぶ十字の窓を出す。
+async function sendOverlay(tabId, frameId, opts) {
   if (!tabId) return { ok: false, reason: "no-tab" };
-  const message = { type: "overlaySelection", fill, picker: true };
-  const opts = frameId != null ? { frameId } : {};
-  let res = await send(tabId, message, opts);
+  const message = { type: "overlaySelection", picker: true };
+  if (opts && opts.fill) message.fill = opts.fill;
+  const sendOpts = frameId != null ? { frameId } : {};
+  let res = await send(tabId, message, sendOpts);
   // 受信側がいるなら、選択が空で ok:false でも再注入しない（二重起動を避ける）。
   if (res) return res;
   const injected = await injectContent(tabId, frameId);
-  if (injected) res = await send(tabId, message, opts);
+  if (injected) res = await send(tabId, message, sendOpts);
   return res || { ok: false, reason: "no-content-script" };
 }
 
@@ -76,31 +72,41 @@ api.runtime.onMessage.addListener((msg, sender) => {
   if (msg.type === "debugMenuClick") {
     const tabId = msg.tabId != null ? msg.tabId : (sender.tab && sender.tab.id);
     const frameId = msg.frameId != null ? msg.frameId : sender.frameId;
-    return sendOverlay(tabId, frameId, msg.fill);
+    return sendOverlay(tabId, frameId, { fill: msg.fill });
   }
 });
+
+function createMenu(menus) {
+  try {
+    const created = menus.create({ id: MENU_ID, title: MENU_TITLE, contexts: ["selection"] });
+    if (created && typeof created.then === "function") created.catch(() => {});
+  } catch (_) {}
+}
 
 function ensureMenu() {
   const menus = menusApi();
   if (!menus || !menus.create) return;
-  for (const item of MENU_ITEMS) {
-    try {
-      const created = menus.create({ id: item.id, title: item.title, contexts: ["selection"] });
-      if (created && typeof created.then === "function") {
-        created.catch(() => {});
-      }
-    } catch (_) {
-      // 同じ id が既にある場合など。項目自体は残る。
+  try {
+    if (menus.update) {
+      const u = menus.update(MENU_ID, { title: MENU_TITLE, contexts: ["selection"] });
+      if (u && typeof u.then === "function") u.catch(() => createMenu(menus));
+    } else {
+      createMenu(menus);
     }
+  } catch (_) {
+    createMenu(menus);
   }
+  try {
+    const r = menus.remove && menus.remove("line-half-mask-enhance");
+    if (r && typeof r.then === "function") r.catch(() => {});
+  } catch (_) {}
 }
 
 function onMenuClick(info, tab) {
-  const item = info && MENU_ITEMS.find((m) => m.id === info.menuItemId);
-  if (!item) return;
+  if (!info || info.menuItemId !== MENU_ID) return;
   const tabId = (tab && tab.id) != null ? tab.id : info.tabId;
   const frameId = info.frameId;
-  return sendOverlay(tabId, frameId, item.fill);
+  return sendOverlay(tabId, frameId);
 }
 
 function bindMenus() {
@@ -119,4 +125,4 @@ if (api.runtime && api.runtime.onStartup) {
 }
 
 // テストからメニュー経路と同じ sendOverlay を呼べるようにする。
-globalThis.__lineHalfMaskBg = { MENU_ID, ENHANCE_MENU_ID, sendOverlay, onMenuClick };
+globalThis.__lineHalfMaskBg = { MENU_ID, MENU_TITLE, sendOverlay, onMenuClick };

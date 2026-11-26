@@ -36,8 +36,8 @@ function clampRatio(v) {
 }
 
 const overlayBtn = document.getElementById("overlay-selection");
+const KEY_COVERAGE = { ArrowLeft: "full", ArrowRight: "off", ArrowUp: "top", ArrowDown: "bottom" };
 
-// 文字列の値のラジオ（範囲・塗り）。
 function choice(name) {
   const el = document.querySelector('input[name="' + name + '"]:checked');
   return el ? el.value : "";
@@ -55,11 +55,18 @@ function showFill(fill) {
   document.getElementById("enhance-panel").hidden = fill !== "enhance";
 }
 
+function showCoverage(v) {
+  for (const b of document.querySelectorAll(".pad [data-coverage]")) {
+    const on = b.dataset.coverage === v;
+    b.classList.toggle("on", on);
+    b.setAttribute("aria-checked", on ? "true" : "false");
+  }
+}
+
 function showState(state) {
   overlayBtn.textContent = state.selectionOn ? "重ねるのを止める" : "選択範囲に重ねる";
   overlayBtn.classList.toggle("on", !!state.selectionOn);
-  // 重ねている間は、ページ側の窓で選んだ範囲を映す。
-  if (state.selectionOn && state.coverage) setChoice("coverage", state.coverage);
+  showCoverage(state.selectionOn ? (state.coverage || "full") : "off");
   toggleBtn.textContent = state.on ? "オフにする" : "オンにする";
   toggleBtn.classList.toggle("on", !!state.on);
   status.className = "note";
@@ -95,28 +102,82 @@ swapBtn.addEventListener("click", async () => {
   }
 });
 
-// 範囲と塗りは storage に保存する。ページ側が変更を見て、出ている重ねにもすぐ反映する。
-async function saveChoice(key) {
+// 塗りは storage に保存する。ページ側が変更を見て、出ている重ねにもすぐ反映する。
+async function saveFill() {
+  const fill = choice("fill");
+  showFill(fill);
   try {
-    if (api.storage && api.storage.local) await api.storage.local.set({ [key]: choice(key) });
+    if (api.storage && api.storage.local) await api.storage.local.set({ fill });
   } catch (_) {}
-  if (key === "fill") showFill(choice("fill"));
 }
 
-for (const key of ["coverage", "fill"]) {
-  for (const el of document.querySelectorAll('input[name="' + key + '"]')) {
-    el.addEventListener("change", () => saveChoice(key));
-  }
+for (const el of document.querySelectorAll('input[name="fill"]')) {
+  el.addEventListener("change", saveFill);
 }
 
 async function loadChoices() {
   let res = null;
   try {
-    if (api.storage && api.storage.local) res = await api.storage.local.get(["coverage", "fill"]);
+    if (api.storage && api.storage.local) res = await api.storage.local.get(["fill"]);
   } catch (_) {}
-  setChoice("coverage", res && res.coverage ? res.coverage : "full");
   showFill(res && res.fill === "enhance" ? "enhance" : "black");
+  showCoverage("off");
 }
+
+// 十字と同じ対応。オフは重ねを終える。ほかは、出ていなければ選択範囲に始め、出ていれば範囲だけ変える。
+async function applyCoverage(cov) {
+  showCoverage(cov);
+  if (cov !== "off") {
+    try {
+      if (api.storage && api.storage.local) await api.storage.local.set({ coverage: cov });
+    } catch (_) {}
+  }
+  try {
+    const state = await send("state");
+    if (cov === "off") {
+      if (state && state.selectionOn) await send("endSelection");
+      await refresh();
+      return;
+    }
+    if (state && state.selectionOn) {
+      const res = await send("setCoverage", { coverage: cov });
+      showState(res || { selectionOn: true, coverage: cov, on: state.on, parity: state.parity });
+      return;
+    }
+    const res = await send("overlaySelection", { coverage: cov });
+    if (res && res.ok) {
+      showState(res);
+      status.textContent = "選択範囲に重ねました。ほかをタップすると終わります";
+      return;
+    }
+    status.className = "err";
+    status.textContent = "先にページの文字を選択してください";
+    showCoverage("off");
+  } catch (_) {
+    showError();
+  }
+}
+
+for (const b of document.querySelectorAll(".pad [data-coverage]")) {
+  b.addEventListener("click", () => applyCoverage(b.dataset.coverage));
+}
+
+// 開いたときから矢印キーで範囲を選ぶ。文字・数値・スライダーにフォーカスがあるときは渡す。
+function typingIn(el) {
+  if (!el) return false;
+  if (el.tagName === "TEXTAREA" || el.isContentEditable) return true;
+  if (el.tagName !== "INPUT") return false;
+  return /^(text|number|range|password|search|email|url|tel)$/.test(el.type || "text");
+}
+
+document.addEventListener("keydown", (e) => {
+  if (e.isComposing) return;
+  if (typingIn(e.target) || typingIn(document.activeElement)) return;
+  const cov = KEY_COVERAGE[e.key];
+  if (!cov) return;
+  e.preventDefault();
+  applyCoverage(cov);
+});
 
 overlayBtn.addEventListener("click", async () => {
   try {

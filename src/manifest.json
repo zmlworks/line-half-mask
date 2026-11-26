@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "行の半分マスク",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "横書きの文書で、奇数行の下半分と偶数行の上半分を白黒の斜め縞で覆います。縞は流れます。選択範囲だけにも、視覚増強の縞にも使えます。パソコンと Android の Firefox で動きます。",
   "browser_specific_settings": {
     "gecko": {

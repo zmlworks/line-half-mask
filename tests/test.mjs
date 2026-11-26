@@ -376,15 +376,17 @@ async function openPage(browser, url, viewport) {
     return fn(browserObj, browserObj);
   }
   const created = [];
+  const updated = [];
   const clickHandlers = [];
   const sent = [];
   const installed = [];
   const startups = [];
-  let removed = false;
+  const removed = [];
   const withMenus = {
     menus: {
       create(item) { created.push(item); return item.id; },
-      remove() { removed = true; },
+      update(id, item) { updated.push({ id, ...item }); return Promise.reject(new Error("no item")); },
+      remove(id) { removed.push(id); return Promise.resolve(); },
       onClicked: { addListener(fn) { clickHandlers.push(fn); } },
     },
     tabs: {
@@ -401,33 +403,50 @@ async function openPage(browser, url, viewport) {
   };
   let threw = false;
   try { loadBg(withMenus); } catch (err) { threw = err; }
+  await Promise.resolve();
   check("background binds menus when the API exists", threw === false, threw && String(threw));
   const item = created.find((i) => i && i.id === "line-half-mask-selection");
   check(
-    "black-fill context menu is labeled 選択範囲を黒塗り",
-    !!(item && item.title === "選択範囲を黒塗り" && Array.isArray(item.contexts) && item.contexts.includes("selection")),
+    "the one context menu is labeled 選択範囲に行マスク",
+    !!(item && item.title === "選択範囲に行マスク" && Array.isArray(item.contexts) && item.contexts.includes("selection")),
     item || created
   );
-  check("background does not remove the menu on startup", removed === false, { removed, created: created.length });
+  check("there is only one context menu item", created.length === 1 && !created.some((i) => i && i.id === "line-half-mask-enhance"), created);
+  check("background drops the old enhance menu item if it is still registered", removed.includes("line-half-mask-enhance") && !removed.includes("line-half-mask-selection"), removed);
   check("onClicked is registered at top level (also has onInstalled/onStartup)", clickHandlers.length >= 1 && installed.length >= 1 && startups.length >= 1, { clicks: clickHandlers.length, installed: installed.length, startups: startups.length });
   await Promise.resolve(clickHandlers[0]({ menuItemId: "line-half-mask-selection", frameId: 3 }, { id: 9 }));
   check(
-    "choosing the black menu sends overlaySelection (black, with picker) to the tab frame",
-    sent.some((s) => s.id === 9 && s.msg && s.msg.type === "overlaySelection" && s.msg.fill === "black" && s.msg.picker === true && s.options && s.options.frameId === 3),
+    "choosing the menu sends overlaySelection with a picker and without a fill (uses the current setting)",
+    sent.some((s) => s.id === 9 && s.msg && s.msg.type === "overlaySelection" && s.msg.picker === true && s.msg.fill == null && s.options && s.options.frameId === 3),
     sent
   );
-
-  const enhItem = created.find((i) => i && i.id === "line-half-mask-enhance");
-  check(
-    "enhance context menu is labeled 選択範囲に視覚増強 and shows for selections",
-    !!(enhItem && enhItem.title === "選択範囲に視覚増強" && Array.isArray(enhItem.contexts) && enhItem.contexts.includes("selection")),
-    enhItem || created
-  );
+  const beforeEnhance = sent.length;
   await Promise.resolve(clickHandlers[0]({ menuItemId: "line-half-mask-enhance", frameId: 2 }, { id: 8 }));
+  check("the old enhance menu id is ignored", sent.length === beforeEnhance, sent.slice(beforeEnhance));
+
+  // 既に項目があるとき（更新）は title を直す。
+  const updatedItems = [];
+  const removed2 = [];
+  const created2 = [];
+  const click2 = [];
+  loadBg({
+    menus: {
+      create(item) { created2.push(item); return item.id; },
+      update(id, item) { updatedItems.push({ id, ...item }); return Promise.resolve(id); },
+      remove(id) { removed2.push(id); return Promise.resolve(); },
+      onClicked: { addListener(fn) { click2.push(fn); } },
+    },
+    tabs: { sendMessage() { return Promise.resolve({ ok: true }); }, query() { return Promise.resolve([]); } },
+    commands: { onCommand: { addListener() {} } },
+    runtime: { onMessage: { addListener() {} }, onInstalled: { addListener() {} }, onStartup: { addListener() {} } },
+    action: { setTitle() {} },
+  });
+  await new Promise((r) => setTimeout(r, 0));
   check(
-    "choosing the enhance menu sends overlaySelection (enhance, with picker) to the tab frame",
-    sent.some((s) => s.id === 8 && s.msg && s.msg.type === "overlaySelection" && s.msg.fill === "enhance" && s.msg.picker === true && s.options && s.options.frameId === 2),
-    sent
+    "on upgrade, the existing menu title is updated to 選択範囲に行マスク and the old enhance item is removed",
+    updatedItems.some((u) => u.id === "line-half-mask-selection" && u.title === "選択範囲に行マスク") &&
+      removed2.includes("line-half-mask-enhance") && created2.length === 0,
+    { updatedItems, removed2, created2 }
   );
 
   const injections = [];
@@ -480,7 +499,7 @@ async function openPage(browser, url, viewport) {
 
 {
   const man = JSON.parse(fs.readFileSync(path.join(srcDir, "manifest.json"), "utf8"));
-  check("manifest declares Android support and version 0.7.0", man.version === "0.7.0" && !!man.browser_specific_settings.gecko_android && Number(man.browser_specific_settings.gecko_android.strict_min_version) >= 142 && man.browser_specific_settings.gecko.id === "line.half.mask@kofu.com", man.browser_specific_settings);
+  check("manifest declares Android support and version 0.7.1", man.version === "0.7.1" && !!man.browser_specific_settings.gecko_android && Number(man.browser_specific_settings.gecko_android.strict_min_version) >= 142 && man.browser_specific_settings.gecko.id === "line.half.mask@kofu.com", man.browser_specific_settings);
   const bgSrc = fs.readFileSync(path.join(srcDir, "background.js"), "utf8");
   check("background guards commands, menus and scripting with feature checks", /api\.commands && api\.commands\.onCommand/.test(bgSrc) && /menusApi\(\)/.test(bgSrc) && /!api\.scripting \|\| !api\.scripting\.executeScript/.test(bgSrc));
 }
@@ -1072,13 +1091,8 @@ if (touchA.supported) {
   const offMasks = await readMasks(page);
   const offState = await page.evaluate(() => window.__lineHalfMask.getState());
   check("coverage off paints nothing but keeps the overlay armed", offMasks.length === 0 && offState.selectionOn === true && offState.coverage === "off", { n: offMasks.length, offState });
-  const offPixels = await page.evaluate(() => {
-    const c = document.getElementById("line-half-mask-root");
-    const d = c.getContext("2d").getImageData(0, 0, c.width, c.height).data;
-    for (let i = 3; i < d.length; i += 4) if (d[i]) return false;
-    return true;
-  });
-  check("coverage off leaves the canvas fully transparent", offPixels === true);
+  const offCanvas = await page.evaluate(() => !!document.getElementById("line-half-mask-root"));
+  check("coverage off removes the canvas", offCanvas === false, { offCanvas });
   await page.evaluate(() => { const a = window.__lineHalfMask; a.setSelCoverage("top"); a.swap(); });
   const swapped = await readMasks(page);
   check("swap on a selection flips top and bottom", matchMasks(swapped, fixedMasks(jaLines, "bottom", selMeasured.viewport, 50)).ok);
@@ -1289,6 +1303,7 @@ await mpage.close();
       window.__storage = { ratio: 50, stripeWhite: 8, stripeBlack: 8, stripeSpeed: 30, randomAngle: false };
       window.__storageSets = [];
       window.__messages = [];
+      window.__sel = false;
       const api = {
         tabs: {
           query: async () => [{ id: 1 }],
@@ -1296,8 +1311,20 @@ await mpage.close();
             window.__messages.push(msg);
             if (msg && msg.type === "setRatio") window.__storage.ratio = msg.ratio;
             if (msg && msg.type === "setStripe") Object.assign(window.__storage, msg);
-            if (msg && msg.type === "overlaySelection") return { ok: !!window.__hasSelection, selectionOn: !!window.__hasSelection, coverage: window.__storage.coverage || "full" };
-            return { on: false, parity: 0, ratio: window.__storage.ratio, stripeWhite: window.__storage.stripeWhite, stripeBlack: window.__storage.stripeBlack, stripeSpeed: window.__storage.stripeSpeed, randomAngle: window.__storage.randomAngle };
+            if (msg && msg.type === "overlaySelection") {
+              window.__sel = !!window.__hasSelection;
+              if (msg.coverage) window.__storage.coverage = msg.coverage;
+              return { ok: !!window.__hasSelection, selectionOn: window.__sel, coverage: window.__storage.coverage || "full" };
+            }
+            if (msg && msg.type === "setCoverage") {
+              window.__storage.coverage = msg.coverage;
+              return { on: false, parity: 0, selectionOn: !!window.__sel, coverage: msg.coverage };
+            }
+            if (msg && msg.type === "endSelection") {
+              window.__sel = false;
+              return { on: false, parity: 0, selectionOn: false };
+            }
+            return { on: false, parity: 0, selectionOn: !!window.__sel, coverage: window.__storage.coverage || "full", ratio: window.__storage.ratio, stripeWhite: window.__storage.stripeWhite, stripeBlack: window.__storage.stripeBlack, stripeSpeed: window.__storage.stripeSpeed, randomAngle: window.__storage.randomAngle };
           },
         },
         storage: {
@@ -1509,6 +1536,9 @@ await mpage.close();
   check("Android popup hides shortcut settings", androidUi.hidden === true && androidUi.hasClass === false, androidUi);
   check("Android popup shows the ratio field", androidUi.ratio === "50", androidUi);
   check("Android popup shows white/black widths, speed, and random tilt", androidUi.white === "8" && androidUi.black === "8" && androidUi.speed === "30" && androidUi.angle === false && androidUi.hasDir === false, androidUi);
+  const idlePad = await androidPage.evaluate(() => [...document.querySelectorAll(".pad [data-coverage]")].map((e) => e.dataset.dir + ":" + e.dataset.coverage + ":" + e.textContent + ":" + e.classList.contains("on") + ":" + e.tabIndex));
+  check("Android popup: idle D-pad is 上半分/オン/オフ/下半分 with オフ highlighted",
+    idlePad.join() === "up:top:上半分:false:-1,left:full:オン:false:-1,right:off:オフ:true:-1,down:bottom:下半分:false:-1", idlePad);
   await androidPage.evaluate(() => { window.__hasSelection = false; });
   await androidPage.click("#overlay-selection");
   await androidPage.waitForTimeout(60);
@@ -1524,28 +1554,66 @@ await mpage.close();
   }));
   check("Android popup: overlay button sends overlaySelection without a picker and confirms", withSel.msgs.length === 2 && !withSel.msgs[1].picker && withSel.text.includes("重ねました") && withSel.btn === "重ねるのを止める", withSel);
   const choices = await androidPage.evaluate(() => ({
-    coverage: [...document.querySelectorAll('input[name="coverage"]')].map((e) => e.value + ":" + e.checked + ":" + e.parentElement.textContent.trim()),
+    pad: [...document.querySelectorAll(".pad [data-coverage]")].map((e) => e.dataset.dir + ":" + e.dataset.coverage + ":" + e.textContent + ":" + e.classList.contains("on") + ":" + e.tabIndex),
     fill: [...document.querySelectorAll('input[name="fill"]')].map((e) => e.value + ":" + e.checked + ":" + e.parentElement.textContent.trim()),
     blackHidden: document.getElementById("black-panel").hidden,
     enhHidden: document.getElementById("enhance-panel").hidden,
   }));
   check(
-    "Android popup: coverage choices 行全体/オフ/上半分/下半分 (default 行全体) and fill choices 黒塗り/視覚増強 (default 黒塗り)",
-    choices.coverage.join() === "full:true:行全体,off:false:オフ,top:false:上半分,bottom:false:下半分" &&
+    "Android popup: after starting, オン is highlighted; fill choices are 黒塗り/視覚増強 (default 黒塗り)",
+    choices.pad.join() === "up:top:上半分:false:-1,left:full:オン:true:-1,right:off:オフ:false:-1,down:bottom:下半分:false:-1" &&
       choices.fill.join() === "black:true:黒塗り,enhance:false:視覚増強" && choices.blackHidden === false && choices.enhHidden === true,
     choices
   );
-  await androidPage.click('input[name="coverage"][value="top"]');
+  await androidPage.click('.pad [data-coverage="top"]');
   await androidPage.click('input[name="fill"][value="enhance"]');
   await androidPage.waitForTimeout(60);
   const saved = await androidPage.evaluate(() => ({
     storage: { coverage: window.__storage.coverage, fill: window.__storage.fill },
+    msgs: window.__messages.filter((m) => m && (m.type === "overlaySelection" || m.type === "setCoverage")),
+    on: [...document.querySelectorAll(".pad button.on")].map((b) => b.dataset.coverage),
     blackHidden: document.getElementById("black-panel").hidden,
     enhHidden: document.getElementById("enhance-panel").hidden,
   }));
-  check("Android popup: choosing 上半分 and 視覚増強 saves them and swaps the settings panel", saved.storage.coverage === "top" && saved.storage.fill === "enhance" && saved.blackHidden === true && saved.enhHidden === false, saved);
+  check("Android popup: tapping 上半分 changes the running overlay, saves coverage, and swaps the settings panel",
+    saved.storage.coverage === "top" && saved.storage.fill === "enhance" && saved.on.join() === "top" &&
+      saved.msgs.some((m) => m.type === "setCoverage" && m.coverage === "top") && saved.blackHidden === true && saved.enhHidden === false, saved);
+  await androidPage.click('.pad [data-coverage="off"]');
+  await androidPage.waitForTimeout(60);
+  const ended = await androidPage.evaluate(() => ({
+    msgs: window.__messages.filter((m) => m && m.type === "endSelection").length,
+    on: [...document.querySelectorAll(".pad button.on")].map((b) => b.dataset.coverage),
+    stored: window.__storage.coverage,
+    btn: document.getElementById("overlay-selection").textContent,
+  }));
+  check("Android popup: tapping オフ ends the overlay, highlights オフ, and keeps the last stored coverage",
+    ended.msgs >= 1 && ended.on.join() === "off" && ended.stored === "top" && ended.btn === "選択範囲に重ねる", ended);
+
+  // 矢印キーは開いたときから同じ操作。数値欄にフォーカスがあるときは渡す。
+  await androidPage.keyboard.press("ArrowLeft");
+  await androidPage.waitForTimeout(60);
+  const byKey = await androidPage.evaluate(() => ({
+    msgs: window.__messages.filter((m) => m && m.type === "overlaySelection" && m.coverage === "full"),
+    on: [...document.querySelectorAll(".pad button.on")].map((b) => b.dataset.coverage),
+    stored: window.__storage.coverage,
+  }));
+  check("Android popup: ← starts the overlay as オン and saves coverage full",
+    byKey.msgs.length >= 1 && byKey.on.join() === "full" && byKey.stored === "full", byKey);
+  await androidPage.waitForTimeout(80);
+  const beforeCount = await androidPage.evaluate(() => window.__messages.length);
+  await androidPage.focus("#ratio");
+  await androidPage.waitForTimeout(40);
+  await androidPage.keyboard.press("ArrowUp");
+  await androidPage.waitForTimeout(60);
+  const blocked = await androidPage.evaluate((n) => ({
+    extra: window.__messages.slice(n),
+    value: document.getElementById("ratio").value,
+    on: [...document.querySelectorAll(".pad button.on")].map((b) => b.dataset.coverage),
+    active: document.activeElement && document.activeElement.id,
+  }), beforeCount);
+  check("Android popup: arrows are left to a focused number field",
+    blocked.extra.every((m) => m.type === "setRatio") && blocked.value === "51" && blocked.on.join() === "full" && blocked.active === "ratio", blocked);
   await androidPage.click('input[name="fill"][value="black"]');
-  await androidPage.click('input[name="coverage"][value="full"]');
   await androidPage.screenshot({ path: path.join(shotDir, "popup-android.png"), fullPage: true });
   await androidPage.close();
 }
@@ -1745,13 +1813,15 @@ await mpage.close();
     }
     await m.send("WebDriver:ExecuteScript", { script: key("ArrowDown") + "return true;", args: [] });
     menuPath.pickerDown = m.val(await m.send("WebDriver:ExecuteScript", { script: pickerState, args: [] }));
-    await m.send("WebDriver:ExecuteScript", { script: key("ArrowRight") + "return true;", args: [] });
-    menuPath.pickerRight = m.val(await m.send("WebDriver:ExecuteScript", { script: pickerState, args: [] }));
     {
       const shot = m.val(await m.send("WebDriver:TakeScreenshot", { full: false, hash: false }));
       if (typeof shot === "string" && shot.length > 100) fs.writeFileSync(path.join(shotDir, "desktop-picker-menu-bottom.png"), Buffer.from(shot, "base64"));
     }
-    await m.send("WebDriver:ExecuteScript", { script: key("ArrowUp") + key("ArrowLeft") + "return true;", args: [] });
+    await m.send("WebDriver:ExecuteScript", { script: key("ArrowRight") + "return true;", args: [] });
+    menuPath.pickerRight = m.val(await m.send("WebDriver:ExecuteScript", { script: pickerState, args: [] }));
+    await m.send("WebDriver:ExecuteScript", { script: key("ArrowUp") + "return true;", args: [] });
+    menuPath.pickerUp = m.val(await m.send("WebDriver:ExecuteScript", { script: pickerState, args: [] }));
+    await m.send("WebDriver:ExecuteScript", { script: key("ArrowLeft") + "return true;", args: [] });
     menuPath.pickerHome = m.val(await m.send("WebDriver:ExecuteScript", { script: pickerState, args: [] }));
     await m.send("WebDriver:ExecuteScript", { script: key("Escape") + "return true;", args: [] });
     menuPath.pickerClosed = m.val(await m.send("WebDriver:ExecuteScript", { script: pickerState, args: [] }));
@@ -1819,14 +1889,15 @@ await mpage.close();
     menuPath
   );
   check(
-    "real add-on menu path: the picker opens with 行全体 selected, arrows move 行全体→上半分→下半分→行全体, Esc closes it and keeps the overlay",
-    !!(menuPath.pickerOpen && menuPath.pickerOpen.picker && menuPath.pickerOpen.labels && menuPath.pickerOpen.labels.join() === "行全体,オフ,上半分,下半分" &&
+    "real add-on menu path: the D-pad opens with オン selected; arrows apply directly (↓ 下半分, → オフ and no canvas, ↑ 上半分, ← オン); Esc closes it and keeps the overlay",
+    !!(menuPath.pickerOpen && menuPath.pickerOpen.picker && menuPath.pickerOpen.labels && menuPath.pickerOpen.labels.join() === "上半分,オン,オフ,下半分" &&
       menuPath.pickerOpen.checked.join() === "full" && !menuPath.pickerOpen.focus &&
-      menuPath.pickerDown && menuPath.pickerDown.checked.join() === "top" &&
-      menuPath.pickerRight && menuPath.pickerRight.checked.join() === "bottom" &&
+      menuPath.pickerDown && menuPath.pickerDown.checked.join() === "bottom" &&
+      menuPath.pickerRight && menuPath.pickerRight.checked.join() === "off" && menuPath.pickerRight.root === false &&
+      menuPath.pickerUp && menuPath.pickerUp.checked.join() === "top" && menuPath.pickerUp.root === true &&
       menuPath.pickerHome && menuPath.pickerHome.checked.join() === "full" &&
       menuPath.pickerClosed && menuPath.pickerClosed.picker === false && menuPath.pickerClosed.root === true),
-    { open: menuPath.pickerOpen, down: menuPath.pickerDown, right: menuPath.pickerRight, home: menuPath.pickerHome, closed: menuPath.pickerClosed, error: menuPath.error }
+    { open: menuPath.pickerOpen, down: menuPath.pickerDown, right: menuPath.pickerRight, up: menuPath.pickerUp, home: menuPath.pickerHome, closed: menuPath.pickerClosed, error: menuPath.error }
   );
   check(
     "real add-on menu path: debugMenuClick with the enhance fill draws crisp black and white stripes and clears the selection",
