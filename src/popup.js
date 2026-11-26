@@ -35,11 +35,31 @@ function clampRatio(v) {
   return n;
 }
 
-const enhanceBtn = document.getElementById("enhance-selection");
+const overlayBtn = document.getElementById("overlay-selection");
+
+// 文字列の値のラジオ（範囲・塗り）。
+function choice(name) {
+  const el = document.querySelector('input[name="' + name + '"]:checked');
+  return el ? el.value : "";
+}
+
+function setChoice(name, value) {
+  for (const el of document.querySelectorAll('input[name="' + name + '"]')) {
+    el.checked = el.value === value;
+  }
+}
+
+function showFill(fill) {
+  setChoice("fill", fill);
+  document.getElementById("black-panel").hidden = fill === "enhance";
+  document.getElementById("enhance-panel").hidden = fill !== "enhance";
+}
 
 function showState(state) {
-  enhanceBtn.textContent = state.enhanceOn ? "視覚増強を止める" : "選択範囲に視覚増強";
-  enhanceBtn.classList.toggle("on", !!state.enhanceOn);
+  overlayBtn.textContent = state.selectionOn ? "重ねるのを止める" : "選択範囲に重ねる";
+  overlayBtn.classList.toggle("on", !!state.selectionOn);
+  // 重ねている間は、ページ側の窓で選んだ範囲を映す。
+  if (state.selectionOn && state.coverage) setChoice("coverage", state.coverage);
   toggleBtn.textContent = state.on ? "オフにする" : "オンにする";
   toggleBtn.classList.toggle("on", !!state.on);
   status.className = "note";
@@ -75,35 +95,41 @@ swapBtn.addEventListener("click", async () => {
   }
 });
 
-document.getElementById("mask-selection").addEventListener("click", async () => {
+// 範囲と塗りは storage に保存する。ページ側が変更を見て、出ている重ねにもすぐ反映する。
+async function saveChoice(key) {
   try {
-    const res = await send("maskSelection");
-    if (res && res.ok) {
-      status.className = "note";
-      status.textContent = "選択範囲をマスクしました。ほかをタップすると終わります";
-      return;
-    }
-    status.className = "err";
-    status.textContent = "先にページの文字を選択してください";
-  } catch (_) {
-    showError();
-  }
-});
+    if (api.storage && api.storage.local) await api.storage.local.set({ [key]: choice(key) });
+  } catch (_) {}
+  if (key === "fill") showFill(choice("fill"));
+}
 
-enhanceBtn.addEventListener("click", async () => {
+for (const key of ["coverage", "fill"]) {
+  for (const el of document.querySelectorAll('input[name="' + key + '"]')) {
+    el.addEventListener("change", () => saveChoice(key));
+  }
+}
+
+async function loadChoices() {
+  let res = null;
+  try {
+    if (api.storage && api.storage.local) res = await api.storage.local.get(["coverage", "fill"]);
+  } catch (_) {}
+  setChoice("coverage", res && res.coverage ? res.coverage : "full");
+  showFill(res && res.fill === "enhance" ? "enhance" : "black");
+}
+
+overlayBtn.addEventListener("click", async () => {
   try {
     const state = await send("state");
-    if (state && state.enhanceOn) {
-      await send("endEnhance");
+    if (state && state.selectionOn) {
+      await send("endSelection");
       await refresh();
       return;
     }
-    const res = await send("enhanceSelection");
+    const res = await send("overlaySelection");
     if (res && res.ok) {
-      status.className = "note";
-      status.textContent = "視覚増強を始めました。ほかをタップすると終わります";
-      enhanceBtn.textContent = "視覚増強を止める";
-      enhanceBtn.classList.add("on");
+      showState(res);
+      status.textContent = "選択範囲に重ねました。ほかをタップすると終わります";
       return;
     }
     status.className = "err";
@@ -438,6 +464,7 @@ for (const el of document.querySelectorAll(".enh input, #enh-rotate, #enh-wander
 
 refresh().catch(showError);
 setupShortcuts();
+loadChoices();
 loadRatio();
 loadStripe();
 loadEnhance();

@@ -154,17 +154,17 @@ function thread() {
     sel.removeAllRanges();
     sel.addRange(range);
     document.dispatchEvent(new Event("selectionchange"));
-    const ok = window.__lineHalfMask.enhanceSelection();
+    const ok = window.__lineHalfMask.overlaySelection({ fill: "enhance" });
     window.__lineHalfMask.setEnhance({ speed: 0, width: 8 });
-    return { ok, n: (window.__lineHalfMask.enhanceInfo() || {}).rects.length };
+    return { ok, n: (window.__lineHalfMask.fxInfo() || {}).rects.length };
   });
   check("enhance starts on text inside the shadow thread", started.ok && started.n > 0, started);
-  const before = await page.evaluate(() => JSON.parse(JSON.stringify(window.__lineHalfMask.enhanceInfo())));
+  const before = await page.evaluate(() => JSON.parse(JSON.stringify(window.__lineHalfMask.fxInfo())));
   await page.evaluate(() => {
     document.getElementById("shadow-host").shadowRoot.getElementById("thread").scrollTop = 80;
   });
   await page.waitForTimeout(250);
-  const after = await page.evaluate(() => JSON.parse(JSON.stringify(window.__lineHalfMask.enhanceInfo())));
+  const after = await page.evaluate(() => JSON.parse(JSON.stringify(window.__lineHalfMask.fxInfo())));
   const moved = before.rects[0] && after.rects[0] && Math.abs((before.rects[0].top - after.rects[0].top) - 80) < 2;
   check("enhance follows a shadow-dom inner scroll (shared box moves with the text)",
     moved && after.box.h === before.box.h, { beforeTop: before.rects[0] && before.rects[0].top, afterTop: after.rects[0] && after.rects[0].top, h: after.box && after.box.h });

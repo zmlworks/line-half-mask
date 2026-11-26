@@ -97,6 +97,24 @@ function expectedMasks(lines, parity, viewport, ratio = 50) {
   return out;
 }
 
+function fixedMasks(lines, part, viewport, ratio = 50) {
+  const out = [];
+  const vw = viewport || { left: 0, top: 0, right: Infinity, bottom: Infinity };
+  const frac = ratio / 100;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const h = line.bottom - line.top;
+    const rawTop = part === "bottom" ? line.top + h * (1 - frac) : line.top;
+    const rawBottom = part === "top" ? line.top + h * frac : line.bottom;
+    const top = Math.max(rawTop, vw.top);
+    const bottom = Math.min(rawBottom, vw.bottom);
+    const left = Math.max(line.left, vw.left);
+    const right = Math.min(line.right, vw.right);
+    if (bottom - top < 0.5 || right - left < 0.5) continue;
+    out.push({ top, bottom, left, right, index: i });
+  }
+  return out;
+}
 function matchMasks(actual, expected) {
   if (actual.length !== expected.length) {
     return { ok: false, reason: "count", actual: actual.length, expected: expected.length };
@@ -386,16 +404,16 @@ async function openPage(browser, url, viewport) {
   check("background binds menus when the API exists", threw === false, threw && String(threw));
   const item = created.find((i) => i && i.id === "line-half-mask-selection");
   check(
-    "selection context menu is labeled 選択範囲だけマスク",
-    !!(item && item.title === "選択範囲だけマスク" && Array.isArray(item.contexts) && item.contexts.includes("selection")),
+    "black-fill context menu is labeled 選択範囲を黒塗り",
+    !!(item && item.title === "選択範囲を黒塗り" && Array.isArray(item.contexts) && item.contexts.includes("selection")),
     item || created
   );
   check("background does not remove the menu on startup", removed === false, { removed, created: created.length });
   check("onClicked is registered at top level (also has onInstalled/onStartup)", clickHandlers.length >= 1 && installed.length >= 1 && startups.length >= 1, { clicks: clickHandlers.length, installed: installed.length, startups: startups.length });
   await Promise.resolve(clickHandlers[0]({ menuItemId: "line-half-mask-selection", frameId: 3 }, { id: 9 }));
   check(
-    "choosing the selection menu sends maskSelection to the tab frame",
-    sent.some((s) => s.id === 9 && s.msg && s.msg.type === "maskSelection" && s.options && s.options.frameId === 3),
+    "choosing the black menu sends overlaySelection (black, with picker) to the tab frame",
+    sent.some((s) => s.id === 9 && s.msg && s.msg.type === "overlaySelection" && s.msg.fill === "black" && s.msg.picker === true && s.options && s.options.frameId === 3),
     sent
   );
 
@@ -407,8 +425,8 @@ async function openPage(browser, url, viewport) {
   );
   await Promise.resolve(clickHandlers[0]({ menuItemId: "line-half-mask-enhance", frameId: 2 }, { id: 8 }));
   check(
-    "choosing the enhance menu sends enhanceSelection to the tab frame",
-    sent.some((s) => s.id === 8 && s.msg && s.msg.type === "enhanceSelection" && s.options && s.options.frameId === 2),
+    "choosing the enhance menu sends overlaySelection (enhance, with picker) to the tab frame",
+    sent.some((s) => s.id === 8 && s.msg && s.msg.type === "overlaySelection" && s.msg.fill === "enhance" && s.msg.picker === true && s.options && s.options.frameId === 2),
     sent
   );
 
@@ -437,8 +455,8 @@ async function openPage(browser, url, viewport) {
   loadBg(withInject);
   const res = await Promise.resolve(injectHandlers[0]({ menuItemId: "line-half-mask-selection", frameId: 0 }, { id: 11 }));
   check(
-    "when the content script is missing, the menu path injects it and retries maskSelection",
-    injections.length >= 1 && injections[0].files && injections[0].files.includes("content.js") && injections[0].target && injections[0].target.tabId === 11 && sent2.some((s) => s.msg && s.msg.type === "maskSelection") && res && res.ok === true,
+    "when the content script is missing, the menu path injects it and retries overlaySelection",
+    injections.length >= 1 && injections[0].files && injections[0].files.includes("content.js") && injections[0].target && injections[0].target.tabId === 11 && sent2.some((s) => s.msg && s.msg.type === "overlaySelection") && res && res.ok === true,
     { injections, sent2, res }
   );
 
@@ -462,7 +480,7 @@ async function openPage(browser, url, viewport) {
 
 {
   const man = JSON.parse(fs.readFileSync(path.join(srcDir, "manifest.json"), "utf8"));
-  check("manifest declares Android support and version 0.6.2", man.version === "0.6.2" && !!man.browser_specific_settings.gecko_android && Number(man.browser_specific_settings.gecko_android.strict_min_version) >= 142 && man.browser_specific_settings.gecko.id === "line.half.mask@kofu.com", man.browser_specific_settings);
+  check("manifest declares Android support and version 0.7.0", man.version === "0.7.0" && !!man.browser_specific_settings.gecko_android && Number(man.browser_specific_settings.gecko_android.strict_min_version) >= 142 && man.browser_specific_settings.gecko.id === "line.half.mask@kofu.com", man.browser_specific_settings);
   const bgSrc = fs.readFileSync(path.join(srcDir, "background.js"), "utf8");
   check("background guards commands, menus and scripting with feature checks", /api\.commands && api\.commands\.onCommand/.test(bgSrc) && /menusApi\(\)/.test(bgSrc) && /!api\.scripting \|\| !api\.scripting\.executeScript/.test(bgSrc));
 }
@@ -505,10 +523,8 @@ const stripeConsts = await page.evaluate(() => ({
   black: window.__lineHalfMask.STRIPE_BLACK,
   period: window.__lineHalfMask.STRIPE_PERIOD,
   speed: window.__lineHalfMask.STRIPE_SPEED,
-  swapMs: window.__lineHalfMask.SEL_SWAP_MS,
 }));
 check("stripe defaults are 8px white and 8px black at 30 px/s", stripeConsts.white === 8 && stripeConsts.black === 8 && stripeConsts.period === 16 && stripeConsts.speed === 30, stripeConsts);
-check("selection auto-swap interval is 3 seconds", stripeConsts.swapMs === 3000, stripeConsts);
 
 {
   await page.emulateMedia({ reducedMotion: "reduce" });
@@ -1026,8 +1042,7 @@ if (touchA.supported) {
     const sel = getSelection();
     sel.removeAllRanges();
     sel.addRange(range);
-    window.__lineHalfMask.useFakeTimers();
-    window.__lineHalfMask.maskSelection();
+    window.__lineHalfMask.overlaySelection();
     window.__lineHalfMask.pause(true);
   });
   await page.waitForTimeout(40);
@@ -1040,31 +1055,34 @@ if (touchA.supported) {
   }));
   check("starting selection mode clears the page selection highlight", selCleared.text === "" && selCleared.count === 0 && selState.selectionOn === true, { selCleared, on: selState.selectionOn });
   const selMasks = await readMasks(page);
-  const selExpected = expectedMasks(jaLines, 0, selMeasured.viewport, 50);
-  const selMatch = matchMasks(selMasks, selExpected);
-  check("selection mode is on and leaves page-wide armed", selState.selectionOn === true && selState.on === true && selState.selParity === 0, selState);
-  check("selection mode masks only the selected paragraph's lines", selMasks.length === jaLines.length && selMasks.length < selMeasured.all.length, { masks: selMasks.length, ja: jaLines.length, all: selMeasured.all.length });
-  check("selection masks follow the selected lines' boxes (parity 0, local numbering)", selMatch.ok, selMatch);
-  check(
-    "selection mode: first selected line has its bottom half masked",
-    hasMask(selMasks, halfOf(jaLines[0], false)) && !hasMask(selMasks, halfOf(jaLines[0], true))
-  );
+  const selMatch = matchMasks(selMasks, fixedMasks(jaLines, "full", selMeasured.viewport, 50));
+  check("selection overlay is on and leaves page-wide armed", selState.selectionOn === true && selState.on === true && selState.coverage === "full" && selState.fill === "black", selState);
+  check("selection overlay covers only the selected paragraph's lines", selMasks.length === jaLines.length && selMasks.length < selMeasured.all.length, { masks: selMasks.length, ja: jaLines.length, all: selMeasured.all.length });
+  check("default coverage is the whole line for every selected line", selMatch.ok, selMatch);
   await page.screenshot({ path: path.join(shotDir, "desktop-selection.png"), fullPage: false });
 
-  await page.evaluate(() => window.__lineHalfMask.advanceFakeTimers(2999));
-  const beforeSwap = await page.evaluate(() => window.__lineHalfMask.getState());
-  check("selection parity stays 0 just before 3 seconds", beforeSwap.selParity === 0 && beforeSwap.selectionOn === true, beforeSwap);
-  await page.evaluate(() => window.__lineHalfMask.advanceFakeTimers(1));
-  const afterSwap = await page.evaluate(() => window.__lineHalfMask.getState());
-  const selMasksSwapped = await readMasks(page);
-  check("selection parity flips at 3 seconds with fake timers", afterSwap.selParity === 1 && afterSwap.selectionOn === true, afterSwap);
-  check(
-    "selection mode: first selected line has its top half masked after the auto-swap",
-    hasMask(selMasksSwapped, halfOf(jaLines[0], true)) && !hasMask(selMasksSwapped, halfOf(jaLines[0], false))
-  );
-  await page.evaluate(() => window.__lineHalfMask.advanceFakeTimers(3000));
-  const afterSecond = await page.evaluate(() => window.__lineHalfMask.getState());
-  check("selection parity returns to 0 after another 3 seconds", afterSecond.selParity === 0 && afterSecond.selectionOn === true, afterSecond);
+  // 上半分・下半分は、選んだ全行の同じ側に固定される（ページ全体の奇偶とは違う）。
+  for (const part of ["bottom", "top"]) {
+    await page.evaluate((p) => window.__lineHalfMask.setSelCoverage(p), part);
+    const got = await readMasks(page);
+    const m = matchMasks(got, fixedMasks(jaLines, part, selMeasured.viewport, 50));
+    check("coverage " + part + ": that half of every selected line, none of the other", m.ok && jaLines.length >= 3 && got.every((g) => g.height < (jaLines[0].bottom - jaLines[0].top) * 0.6), m);
+  }
+  await page.evaluate(() => window.__lineHalfMask.setSelCoverage("off"));
+  const offMasks = await readMasks(page);
+  const offState = await page.evaluate(() => window.__lineHalfMask.getState());
+  check("coverage off paints nothing but keeps the overlay armed", offMasks.length === 0 && offState.selectionOn === true && offState.coverage === "off", { n: offMasks.length, offState });
+  const offPixels = await page.evaluate(() => {
+    const c = document.getElementById("line-half-mask-root");
+    const d = c.getContext("2d").getImageData(0, 0, c.width, c.height).data;
+    for (let i = 3; i < d.length; i += 4) if (d[i]) return false;
+    return true;
+  });
+  check("coverage off leaves the canvas fully transparent", offPixels === true);
+  await page.evaluate(() => { const a = window.__lineHalfMask; a.setSelCoverage("top"); a.swap(); });
+  const swapped = await readMasks(page);
+  check("swap on a selection flips top and bottom", matchMasks(swapped, fixedMasks(jaLines, "bottom", selMeasured.viewport, 50)).ok);
+  await page.evaluate(() => window.__lineHalfMask.setSelCoverage("full"));
 
   const currentSelMasks = await readMasks(page);
   const inside = currentSelMasks[0];
@@ -1072,7 +1090,7 @@ if (touchA.supported) {
   await page.mouse.click(inside.left + inside.width / 2, inside.top + inside.height / 2);
   await page.waitForTimeout(40);
   const stillOn = await page.evaluate(() => window.__lineHalfMask.getState());
-  check("clicking inside a selection mask keeps the mode on", stillOn.selectionOn === true, stillOn);
+  check("clicking inside a selected line keeps the mode on", stillOn.selectionOn === true, stillOn);
 
   await page.mouse.click(16, 16);
   await page.waitForTimeout(40);
@@ -1092,7 +1110,7 @@ if (touchA.supported) {
     const sel = getSelection();
     sel.removeAllRanges();
     sel.addRange(range);
-    window.__lineHalfMask.maskSelection();
+    window.__lineHalfMask.overlaySelection();
     window.__lineHalfMask.pause(true);
   });
   await page.waitForTimeout(40);
@@ -1130,11 +1148,11 @@ if (touchA.supported) {
     sel.addRange(range);
     api.captureSelection();
     sel.removeAllRanges();
-    const fresh = api.maskSelection();
+    const fresh = api.overlaySelection();
     api.endSelection();
     const realNow = Date.now;
     Date.now = () => realNow() + 61000;
-    const old = api.maskSelection();
+    const old = api.overlaySelection();
     Date.now = realNow;
     return { fresh, old };
   });
@@ -1150,7 +1168,7 @@ if (touchA.supported) {
     const sel = getSelection();
     sel.removeAllRanges();
     sel.addRange(range);
-    window.__lineHalfMask.maskSelection();
+    window.__lineHalfMask.overlaySelection();
     window.__lineHalfMask.pause(true);
   });
   await page.waitForTimeout(40);
@@ -1172,12 +1190,12 @@ if (touchA.supported) {
     sel.addRange(range);
     el.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2, clientX: 80, clientY: 200 }));
     sel.removeAllRanges();
-    const ok = window.__lineHalfMask.maskSelection();
+    const ok = window.__lineHalfMask.overlaySelection();
     window.__lineHalfMask.pause(true);
     return { ok, state: window.__lineHalfMask.getState(), masks: window.__lineHalfMask.collect().length };
   });
   check(
-    "contextmenu captures the range so maskSelection still works after the selection is cleared",
+    "contextmenu captures the range so overlaySelection still works after the selection is cleared",
     lost.ok === true && lost.state.selectionOn === true && lost.masks >= 2,
     lost
   );
@@ -1278,7 +1296,7 @@ await mpage.close();
             window.__messages.push(msg);
             if (msg && msg.type === "setRatio") window.__storage.ratio = msg.ratio;
             if (msg && msg.type === "setStripe") Object.assign(window.__storage, msg);
-            if (msg && msg.type === "maskSelection") return { ok: !!window.__hasSelection, selectionOn: !!window.__hasSelection };
+            if (msg && msg.type === "overlaySelection") return { ok: !!window.__hasSelection, selectionOn: !!window.__hasSelection, coverage: window.__storage.coverage || "full" };
             return { on: false, parity: 0, ratio: window.__storage.ratio, stripeWhite: window.__storage.stripeWhite, stripeBlack: window.__storage.stripeBlack, stripeSpeed: window.__storage.stripeSpeed, randomAngle: window.__storage.randomAngle };
           },
         },
@@ -1492,15 +1510,42 @@ await mpage.close();
   check("Android popup shows the ratio field", androidUi.ratio === "50", androidUi);
   check("Android popup shows white/black widths, speed, and random tilt", androidUi.white === "8" && androidUi.black === "8" && androidUi.speed === "30" && androidUi.angle === false && androidUi.hasDir === false, androidUi);
   await androidPage.evaluate(() => { window.__hasSelection = false; });
-  await androidPage.click("#mask-selection");
+  await androidPage.click("#overlay-selection");
   await androidPage.waitForTimeout(60);
-  const noSel = await androidPage.evaluate(() => ({ text: document.getElementById("status").textContent, msgs: window.__messages.filter((m) => m && m.type === "maskSelection").length }));
-  check("Android popup: selection button asks for a selection when none exists", noSel.msgs === 1 && noSel.text.includes("選択"), noSel);
+  const noSel = await androidPage.evaluate(() => ({ text: document.getElementById("status").textContent, msgs: window.__messages.filter((m) => m && m.type === "overlaySelection").length }));
+  check("Android popup: overlay button asks for a selection when none exists", noSel.msgs === 1 && noSel.text.includes("選択"), noSel);
   await androidPage.evaluate(() => { window.__hasSelection = true; });
-  await androidPage.click("#mask-selection");
+  await androidPage.click("#overlay-selection");
   await androidPage.waitForTimeout(60);
-  const withSel = await androidPage.evaluate(() => ({ text: document.getElementById("status").textContent, msgs: window.__messages.filter((m) => m && m.type === "maskSelection").length }));
-  check("Android popup: selection button sends maskSelection and confirms", withSel.msgs === 2 && withSel.text.includes("マスクしました"), withSel);
+  const withSel = await androidPage.evaluate(() => ({
+    text: document.getElementById("status").textContent,
+    msgs: window.__messages.filter((m) => m && m.type === "overlaySelection"),
+    btn: document.getElementById("overlay-selection").textContent,
+  }));
+  check("Android popup: overlay button sends overlaySelection without a picker and confirms", withSel.msgs.length === 2 && !withSel.msgs[1].picker && withSel.text.includes("重ねました") && withSel.btn === "重ねるのを止める", withSel);
+  const choices = await androidPage.evaluate(() => ({
+    coverage: [...document.querySelectorAll('input[name="coverage"]')].map((e) => e.value + ":" + e.checked + ":" + e.parentElement.textContent.trim()),
+    fill: [...document.querySelectorAll('input[name="fill"]')].map((e) => e.value + ":" + e.checked + ":" + e.parentElement.textContent.trim()),
+    blackHidden: document.getElementById("black-panel").hidden,
+    enhHidden: document.getElementById("enhance-panel").hidden,
+  }));
+  check(
+    "Android popup: coverage choices 行全体/オフ/上半分/下半分 (default 行全体) and fill choices 黒塗り/視覚増強 (default 黒塗り)",
+    choices.coverage.join() === "full:true:行全体,off:false:オフ,top:false:上半分,bottom:false:下半分" &&
+      choices.fill.join() === "black:true:黒塗り,enhance:false:視覚増強" && choices.blackHidden === false && choices.enhHidden === true,
+    choices
+  );
+  await androidPage.click('input[name="coverage"][value="top"]');
+  await androidPage.click('input[name="fill"][value="enhance"]');
+  await androidPage.waitForTimeout(60);
+  const saved = await androidPage.evaluate(() => ({
+    storage: { coverage: window.__storage.coverage, fill: window.__storage.fill },
+    blackHidden: document.getElementById("black-panel").hidden,
+    enhHidden: document.getElementById("enhance-panel").hidden,
+  }));
+  check("Android popup: choosing 上半分 and 視覚増強 saves them and swaps the settings panel", saved.storage.coverage === "top" && saved.storage.fill === "enhance" && saved.blackHidden === true && saved.enhHidden === false, saved);
+  await androidPage.click('input[name="fill"][value="black"]');
+  await androidPage.click('input[name="coverage"][value="full"]');
   await androidPage.screenshot({ path: path.join(shotDir, "popup-android.png"), fullPage: true });
   await androidPage.close();
 }
@@ -1607,7 +1652,7 @@ await mpage.close();
     }));
     menuPath.prep = prep;
     // メニューと同じ経路（背景の debugMenuClick）を、拡張のページから呼んでページへ戻る。
-    async function clickViaBackground(action) {
+    async function clickViaBackground(fill) {
       await m.send("Marionette:SetContext", { value: "chrome" });
       const opened = m.val(await m.send("WebDriver:ExecuteScript", {
         script: `const policy = WebExtensionPolicy.getByID("line.half.mask@kofu.com");
@@ -1637,17 +1682,17 @@ await mpage.close();
       }
       const sent = m.val(await m.send("WebDriver:ExecuteAsyncScript", {
         script: `const cb = arguments[arguments.length - 1];
-          const tabId = arguments[0], action = arguments[1];
+          const tabId = arguments[0], fill = arguments[1];
           (async () => {
             const hasBrowser = typeof browser !== "undefined" && !!(browser.runtime && browser.runtime.sendMessage);
             let res = null, err = null;
             if (hasBrowser) {
-              try { res = await browser.runtime.sendMessage({ type: "debugMenuClick", tabId, frameId: 0, action }); }
+              try { res = await browser.runtime.sendMessage({ type: "debugMenuClick", tabId, frameId: 0, fill }); }
               catch (e) { err = String(e && e.message || e); }
             }
             cb({ hasBrowser, href: location.href, res, err });
           })().catch((e) => cb({ err: String(e && e.message || e) }));`,
-        args: [opened && opened.tabId, action],
+        args: [opened && opened.tabId, fill],
       }));
       await m.send("Marionette:SetContext", { value: "chrome" });
       await m.send("WebDriver:ExecuteScript", {
@@ -1667,7 +1712,7 @@ await mpage.close();
       }
       return { opened, handles, popupUrl, sent };
     }
-    const first = await clickViaBackground();
+    const first = await clickViaBackground("black");
     menuPath.tabId = first.opened && first.opened.tabId;
     menuPath.handles = first.handles;
     menuPath.popupUrl = first.popupUrl;
@@ -1682,10 +1727,34 @@ await mpage.close();
           width: root && root.width,
           height: root && root.height,
           selectionRemaining: !!(getSelection() && getSelection().toString()),
+          picker: !!document.getElementById("line-half-mask-picker"),
         };`,
       args: [],
     }));
     menuPath.after = after;
+    // 窓の操作は、本物のアドオンの content script に届く keydown で確かめる。
+    const pickerState = `const h = document.getElementById("line-half-mask-picker");
+      return { picker: !!h, checked: h && h.shadowRoot ? [...h.shadowRoot.querySelectorAll('[aria-checked="true"]')].map((b) => b.dataset.coverage) : null,
+        labels: h && h.shadowRoot ? [...h.shadowRoot.querySelectorAll("button")].map((b) => b.textContent) : null,
+        root: !!document.getElementById("line-half-mask-root"), focus: document.activeElement && document.activeElement.id };`;
+    const key = (k) => `window.dispatchEvent(new KeyboardEvent("keydown", { key: "${k}", bubbles: true, cancelable: true })); `;
+    menuPath.pickerOpen = m.val(await m.send("WebDriver:ExecuteScript", { script: pickerState, args: [] }));
+    {
+      const shot = m.val(await m.send("WebDriver:TakeScreenshot", { full: false, hash: false }));
+      if (typeof shot === "string" && shot.length > 100) fs.writeFileSync(path.join(shotDir, "desktop-picker-menu.png"), Buffer.from(shot, "base64"));
+    }
+    await m.send("WebDriver:ExecuteScript", { script: key("ArrowDown") + "return true;", args: [] });
+    menuPath.pickerDown = m.val(await m.send("WebDriver:ExecuteScript", { script: pickerState, args: [] }));
+    await m.send("WebDriver:ExecuteScript", { script: key("ArrowRight") + "return true;", args: [] });
+    menuPath.pickerRight = m.val(await m.send("WebDriver:ExecuteScript", { script: pickerState, args: [] }));
+    {
+      const shot = m.val(await m.send("WebDriver:TakeScreenshot", { full: false, hash: false }));
+      if (typeof shot === "string" && shot.length > 100) fs.writeFileSync(path.join(shotDir, "desktop-picker-menu-bottom.png"), Buffer.from(shot, "base64"));
+    }
+    await m.send("WebDriver:ExecuteScript", { script: key("ArrowUp") + key("ArrowLeft") + "return true;", args: [] });
+    menuPath.pickerHome = m.val(await m.send("WebDriver:ExecuteScript", { script: pickerState, args: [] }));
+    await m.send("WebDriver:ExecuteScript", { script: key("Escape") + "return true;", args: [] });
+    menuPath.pickerClosed = m.val(await m.send("WebDriver:ExecuteScript", { script: pickerState, args: [] }));
     if (after && after.hasRoot && after.tag === "CANVAS") {
       const shot = m.val(await m.send("WebDriver:TakeScreenshot", { full: false, hash: false }));
       if (typeof shot === "string" && shot.length > 100) {
@@ -1706,11 +1775,11 @@ await mpage.close();
         return true;`,
       args: [],
     });
-    const second = await clickViaBackground("enhanceSelection");
+    const second = await clickViaBackground("enhance");
     menuPath.enhanceRes = second.sent && second.sent.res;
     menuPath.enhanceAfter = m.val(await m.send("WebDriver:ExecuteScript", {
-      script: `const c = document.getElementById("line-half-mask-enhance");
-        if (!c) return { hasCanvas: false, maskRoot: !!document.getElementById("line-half-mask-root") };
+      script: `const c = document.getElementById("line-half-mask-root");
+        if (!c) return { hasCanvas: false };
         const d = c.getContext("2d").getImageData(0, 0, c.width, c.height).data;
         let opaque = 0, odd = 0;
         for (let i = 0; i < d.length; i += 4) {
@@ -1750,8 +1819,18 @@ await mpage.close();
     menuPath
   );
   check(
-    "real add-on menu path: debugMenuClick with enhanceSelection draws crisp black and white stripes and clears the selection",
-    !!(menuPath.enhanceRes && menuPath.enhanceRes.ok === true && menuPath.enhanceRes.enhanceOn === true &&
+    "real add-on menu path: the picker opens with 行全体 selected, arrows move 行全体→上半分→下半分→行全体, Esc closes it and keeps the overlay",
+    !!(menuPath.pickerOpen && menuPath.pickerOpen.picker && menuPath.pickerOpen.labels && menuPath.pickerOpen.labels.join() === "行全体,オフ,上半分,下半分" &&
+      menuPath.pickerOpen.checked.join() === "full" && !menuPath.pickerOpen.focus &&
+      menuPath.pickerDown && menuPath.pickerDown.checked.join() === "top" &&
+      menuPath.pickerRight && menuPath.pickerRight.checked.join() === "bottom" &&
+      menuPath.pickerHome && menuPath.pickerHome.checked.join() === "full" &&
+      menuPath.pickerClosed && menuPath.pickerClosed.picker === false && menuPath.pickerClosed.root === true),
+    { open: menuPath.pickerOpen, down: menuPath.pickerDown, right: menuPath.pickerRight, home: menuPath.pickerHome, closed: menuPath.pickerClosed, error: menuPath.error }
+  );
+  check(
+    "real add-on menu path: debugMenuClick with the enhance fill draws crisp black and white stripes and clears the selection",
+    !!(menuPath.enhanceRes && menuPath.enhanceRes.ok === true && menuPath.enhanceRes.selectionOn === true && menuPath.enhanceRes.fill === "enhance" &&
       menuPath.enhanceAfter && menuPath.enhanceAfter.hasCanvas && menuPath.enhanceAfter.pe === "none" &&
       menuPath.enhanceAfter.opaque > 1000 && menuPath.enhanceAfter.odd === 0 &&
       menuPath.enhanceAfter.selectionRemaining === false && menuPath.enhanceScreenshot),

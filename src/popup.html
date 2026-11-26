@@ -40,7 +40,7 @@
     button:active {
       background: #eee;
     }
-    #toggle.on {
+    #toggle.on, #overlay-selection.on {
       background: #111;
       color: #fff;
       border-color: #111;
@@ -110,10 +110,19 @@
       align-items: center;
       gap: 4px;
       font-size: 13px;
-      margin: 0 12px 0 0;
+      margin: 0 10px 0 0;
     }
     .radios input {
       margin: 0;
+    }
+    .radios.grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      row-gap: 4px;
+      margin-top: 10px;
+    }
+    .radios.grid > span {
+      grid-column: 1 / 3;
     }
     .panel {
       margin: 0 0 0 0;
@@ -131,14 +140,28 @@
   <h1>行の半分マスク</h1>
   <button id="toggle" type="button">オンにする</button>
   <button id="swap" type="button">塗りを入れ替え</button>
-  <button id="mask-selection" type="button">選択範囲だけマスク</button>
-  <button id="enhance-selection" type="button">選択範囲に視覚増強</button>
+  <button id="overlay-selection" type="button">選択範囲に重ねる</button>
   <p id="status" class="note"></p>
+  <p class="note">文字を選んで、右クリックのメニューか上のボタンで始めます。Esc か、範囲の外をクリックかタップで終わります。</p>
+  <div class="radios grid">
+    <span>選択範囲に重ねる範囲</span>
+    <label><input type="radio" name="coverage" value="full">行全体</label>
+    <label><input type="radio" name="coverage" value="off">オフ</label>
+    <label><input type="radio" name="coverage" value="top">上半分</label>
+    <label><input type="radio" name="coverage" value="bottom">下半分</label>
+  </div>
+  <div class="radios">
+    <span>塗り</span>
+    <label><input type="radio" name="fill" value="black">黒塗り</label>
+    <label><input type="radio" name="fill" value="enhance">視覚増強</label>
+  </div>
   <label class="ratio">
     <span>マスクの割合（パーセント）</span>
     <input id="ratio" type="number" min="50" max="90" step="1" value="50">
   </label>
   <p class="note">50 から 90 までの整数です。</p>
+  <div id="black-panel" class="panel">
+  <h2>黒塗りの設定</h2>
   <label class="stripe">
     <span>白の幅（ピクセル）</span>
     <input id="stripe-white" type="number" min="1" max="16" step="1" value="8">
@@ -158,8 +181,9 @@
     <span>線の傾きと流れの左右をランダム</span>
   </label>
   <p class="note">オフのときは 45 度で、縞を横切る向きに進みます。オンのときは傾きと、法線の左右がランダムになります。</p>
-  <h2>視覚増強</h2>
-  <p class="note">文字を選んで、右クリックのメニューか上のボタンで始めます。Esc か、範囲の外をクリックかタップで終わります。</p>
+  </div>
+  <div id="enhance-panel" class="panel">
+  <h2>視覚増強の設定</h2>
   <label class="check">
     <input id="enh-auto" type="checkbox">
     <span>ゆっくりランダムに変化</span>
@@ -215,6 +239,7 @@
       <span id="enh-hue-v"></span>
       <input id="enh-hue" type="range" min="0" max="1000" step="1">
     </label>
+  </div>
   </div>
   <section id="shortcuts" hidden>
     <h2>ショートカット</h2>

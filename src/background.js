@@ -6,20 +6,20 @@
 const api = typeof browser !== "undefined" ? browser : chrome;
 const MENU_ID = "line-half-mask-selection";
 const ENHANCE_MENU_ID = "line-half-mask-enhance";
-// メニュー項目と、content.js へ送るメッセージの対応。
+// メニュー項目と、選択範囲に重ねる塗りの種類（黒塗り／視覚増強）の対応。
 const MENU_ITEMS = [
-  { id: MENU_ID, title: "選択範囲だけマスク", type: "maskSelection" },
-  { id: ENHANCE_MENU_ID, title: "選択範囲に視覚増強", type: "enhanceSelection" },
+  { id: MENU_ID, title: "選択範囲を黒塗り", fill: "black" },
+  { id: ENHANCE_MENU_ID, title: "選択範囲に視覚増強", fill: "enhance" },
 ];
 
 function menusApi() {
   return (api && (api.menus || api.contextMenus)) || null;
 }
 
-async function send(tabId, type, opts) {
+async function send(tabId, message, opts) {
   const options = opts && opts.frameId != null ? { frameId: opts.frameId } : {};
   try {
-    return await api.tabs.sendMessage(tabId, { type }, options);
+    return await api.tabs.sendMessage(tabId, typeof message === "string" ? { type: message } : message, options);
   } catch (_) {
     return null;
   }
@@ -37,15 +37,16 @@ async function injectContent(tabId, frameId) {
   }
 }
 
-async function sendMaskSelection(tabId, frameId, type) {
+// メニューから: 選択範囲に重ね、範囲を選ぶ小さな窓を出す。
+async function sendOverlay(tabId, frameId, fill) {
   if (!tabId) return { ok: false, reason: "no-tab" };
-  if (!type) type = "maskSelection";
+  const message = { type: "overlaySelection", fill, picker: true };
   const opts = frameId != null ? { frameId } : {};
-  let res = await send(tabId, type, opts);
+  let res = await send(tabId, message, opts);
   // 受信側がいるなら、選択が空で ok:false でも再注入しない（二重起動を避ける）。
   if (res) return res;
   const injected = await injectContent(tabId, frameId);
-  if (injected) res = await send(tabId, type, opts);
+  if (injected) res = await send(tabId, message, opts);
   return res || { ok: false, reason: "no-content-script" };
 }
 
@@ -67,7 +68,7 @@ api.runtime.onMessage.addListener((msg, sender) => {
   if (!msg) return;
   if (msg.type === "state") {
     if (!sender.tab || !sender.tab.id) return;
-    const title = msg.on || msg.selectionOn || msg.enhanceOn ? "行の半分マスク（オン）" : "行の半分マスク";
+    const title = msg.on || msg.selectionOn ? "行の半分マスク（オン）" : "行の半分マスク";
     api.action.setTitle({ tabId: sender.tab.id, title });
     return;
   }
@@ -75,7 +76,7 @@ api.runtime.onMessage.addListener((msg, sender) => {
   if (msg.type === "debugMenuClick") {
     const tabId = msg.tabId != null ? msg.tabId : (sender.tab && sender.tab.id);
     const frameId = msg.frameId != null ? msg.frameId : sender.frameId;
-    return sendMaskSelection(tabId, frameId, msg.action);
+    return sendOverlay(tabId, frameId, msg.fill);
   }
 });
 
@@ -99,7 +100,7 @@ function onMenuClick(info, tab) {
   if (!item) return;
   const tabId = (tab && tab.id) != null ? tab.id : info.tabId;
   const frameId = info.frameId;
-  return sendMaskSelection(tabId, frameId, item.type);
+  return sendOverlay(tabId, frameId, item.fill);
 }
 
 function bindMenus() {
@@ -117,5 +118,5 @@ if (api.runtime && api.runtime.onStartup) {
   api.runtime.onStartup.addListener(() => { ensureMenu(); });
 }
 
-// テストからメニュー経路と同じ sendMaskSelection を呼べるようにする。
-globalThis.__lineHalfMaskBg = { MENU_ID, ENHANCE_MENU_ID, sendMaskSelection, onMenuClick };
+// テストからメニュー経路と同じ sendOverlay を呼べるようにする。
+globalThis.__lineHalfMaskBg = { MENU_ID, ENHANCE_MENU_ID, sendOverlay, onMenuClick };

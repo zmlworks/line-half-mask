@@ -180,7 +180,7 @@ const selectPara = (page, id = "p-ja") => page.evaluate((id) => {
 
 // canvas の画素をまとめて読む。
 const readCanvas = (page) => page.evaluate(() => {
-  const c = document.getElementById("line-half-mask-enhance");
+  const c = document.getElementById("line-half-mask-root");
   if (!c) return null;
   const d = c.getContext("2d").getImageData(0, 0, c.width, c.height).data;
   return { w: c.width, h: c.height, data: Array.from(d) };
@@ -205,19 +205,19 @@ const setCfg = (page, cfg) => page.evaluate((cfg) => window.__lineHalfMask.setEn
   const page = await openPage();
   await selectPara(page);
   const started = await page.evaluate(() => {
-    const ok = window.__lineHalfMask.enhanceSelection();
-    return { ok, sel: getSelection().toString().length, state: window.__lineHalfMask.getState().enhanceOn };
+    const ok = window.__lineHalfMask.overlaySelection({ fill: "enhance" });
+    return { ok, sel: getSelection().toString().length, state: window.__lineHalfMask.getState().selectionOn };
   });
-  check("enhanceSelection starts on a selection and clears the page highlight", started.ok === true && started.sel === 0 && started.state === true, started);
+  check("overlaySelection (enhance) starts on a selection and clears the page highlight", started.ok === true && started.sel === 0 && started.state === true, started);
   const canvasInfo = await page.evaluate(() => {
-    const c = document.getElementById("line-half-mask-enhance");
+    const c = document.getElementById("line-half-mask-root");
     const cs = getComputedStyle(c);
-    return { pe: cs.pointerEvents, pos: cs.position, z: cs.zIndex, n: document.querySelectorAll("#line-half-mask-enhance").length, aria: c.getAttribute("aria-hidden") };
+    return { pe: cs.pointerEvents, pos: cs.position, z: cs.zIndex, n: document.querySelectorAll("#line-half-mask-root").length, aria: c.getAttribute("aria-hidden") };
   });
   check("overlay is one fixed canvas with pointer-events none and top z-index", canvasInfo.pe === "none" && canvasInfo.pos === "fixed" && canvasInfo.z === "2147483647" && canvasInfo.n === 1 && canvasInfo.aria === "true", canvasInfo);
 
-  await page.evaluate(() => window.__lineHalfMask.enhanceAt(0));
-  let info = await page.evaluate(() => JSON.parse(JSON.stringify(window.__lineHalfMask.enhanceInfo())));
+  await page.evaluate(() => window.__lineHalfMask.showAt(0));
+  let info = await page.evaluate(() => JSON.parse(JSON.stringify(window.__lineHalfMask.fxInfo())));
   let img = await readCanvas(page);
   let inside = 0, outside = 0, wrongInside = 0, wrongOutside = 0, odd = 0;
   const inRects = (x, y) => info.rects.some((r) => x >= Math.round(r.left) && x < Math.round(r.left + r.width) && y >= Math.round(r.top) && y < Math.round(r.top + r.height));
@@ -257,8 +257,8 @@ const setCfg = (page, cfg) => page.evaluate((cfg) => window.__lineHalfMask.setEn
 
   // 動き: 開始から 1 秒後に、縞がアプリと同じだけ進んでいる。
   await setCfg(page, { speed: 10, width: 8 });
-  await page.evaluate(() => window.__lineHalfMask.enhanceAt(1));
-  info = await page.evaluate(() => JSON.parse(JSON.stringify(window.__lineHalfMask.enhanceInfo())));
+  await page.evaluate(() => window.__lineHalfMask.showAt(1));
+  info = await page.evaluate(() => JSON.parse(JSON.stringify(window.__lineHalfMask.fxInfo())));
   img = await readCanvas(page);
   let bad = 0;
   const r0 = info.rects[1];
@@ -271,14 +271,15 @@ const setCfg = (page, cfg) => page.evaluate((cfg) => window.__lineHalfMask.setEn
 
   // 実時間でも動く（rAF）。速さ 100 px/s で 0.4 秒後に画素が変わる。
   await setCfg(page, { speed: 100, width: 8 });
+  await page.evaluate(() => window.__lineHalfMask.pause(false));
   const h1 = await page.evaluate(() => {
-    const c = document.getElementById("line-half-mask-enhance");
+    const c = document.getElementById("line-half-mask-root");
     const d = c.getContext("2d").getImageData(60, 190, 80, 8).data;
     let s = ""; for (let i = 0; i < d.length; i += 4) s += d[i] ? "1" : "0"; return s;
   });
   await page.waitForTimeout(400);
   const h2 = await page.evaluate(() => {
-    const c = document.getElementById("line-half-mask-enhance");
+    const c = document.getElementById("line-half-mask-root");
     const d = c.getContext("2d").getImageData(60, 190, 80, 8).data;
     let s = ""; for (let i = 0; i < d.length; i += 4) s += d[i] ? "1" : "0"; return s;
   });
@@ -293,8 +294,8 @@ const setCfg = (page, cfg) => page.evaluate((cfg) => window.__lineHalfMask.setEn
 
   // 色モード: 2 色だけで、色相が 180 度違う。
   await setCfg(page, { color: 1, hueRate: 2, speed: 0, width: 4 });
-  await page.evaluate(() => window.__lineHalfMask.enhanceAt(0));
-  info = await page.evaluate(() => JSON.parse(JSON.stringify(window.__lineHalfMask.enhanceInfo())));
+  await page.evaluate(() => window.__lineHalfMask.showAt(0));
+  info = await page.evaluate(() => JSON.parse(JSON.stringify(window.__lineHalfMask.fxInfo())));
   img = await readCanvas(page);
   const colors = new Map();
   for (let i = 0; i < img.data.length; i += 4) {
@@ -310,19 +311,19 @@ const setCfg = (page, cfg) => page.evaluate((cfg) => window.__lineHalfMask.setEn
 
   // 自動モード
   await setCfg(page, { auto: true, color: 0 });
-  await page.evaluate(() => window.__lineHalfMask.enhanceAt(25));
-  info = await page.evaluate(() => JSON.parse(JSON.stringify(window.__lineHalfMask.enhanceInfo())));
+  await page.evaluate(() => window.__lineHalfMask.showAt(25));
+  info = await page.evaluate(() => JSON.parse(JSON.stringify(window.__lineHalfMask.fxInfo())));
   check("auto mode: 8 px stripes, rotated away from 45 degrees, pivot wanders", info.pose.width === 8 && Math.abs(info.pose.angle - Math.PI / 4) > 0.01 && info.pose.rotating === true, info.pose);
 
   // 回転（時計回り 90°/s）
   await setCfg(page, { auto: false, rotate: true, rotSpeed: 90, speed: 0, width: 8 });
-  await page.evaluate(() => window.__lineHalfMask.enhanceAt(0.5));
-  info = await page.evaluate(() => JSON.parse(JSON.stringify(window.__lineHalfMask.enhanceInfo())));
+  await page.evaluate(() => window.__lineHalfMask.showAt(0.5));
+  info = await page.evaluate(() => JSON.parse(JSON.stringify(window.__lineHalfMask.fxInfo())));
   check("rotation: 90 °/s clockwise gives 45 + 45 degrees at 0.5 s", near(info.pose.angle, Math.PI / 2, 1e-6), info.pose);
   // 各行の左上から同じ局所座標ではなく、包む四角を共有した場として続く（90 度なら横縞）。
   await setCfg(page, { auto: false, rotate: true, rotSpeed: 45, speed: 0, width: 8, wander: false });
-  await page.evaluate(() => window.__lineHalfMask.enhanceAt(1));
-  info = await page.evaluate(() => JSON.parse(JSON.stringify(window.__lineHalfMask.enhanceInfo())));
+  await page.evaluate(() => window.__lineHalfMask.showAt(1));
+  info = await page.evaluate(() => JSON.parse(JSON.stringify(window.__lineHalfMask.fxInfo())));
   img = await readCanvas(page);
   {
     let bad = 0, sameLocal = 0, compared = 0;
@@ -346,21 +347,21 @@ const setCfg = (page, cfg) => page.evaluate((cfg) => window.__lineHalfMask.setEn
   await page.mouse.move(info.rects[2].left + 50, info.rects[2].top + 10);
   await page.mouse.down();
   await page.mouse.up();
-  const stay = await page.evaluate(() => window.__lineHalfMask.getState().enhanceOn);
+  const stay = await page.evaluate(() => window.__lineHalfMask.getState().selectionOn);
   check("a click inside the enhanced lines keeps the effect", stay === true);
   await page.keyboard.press("Escape");
-  const afterEsc = await page.evaluate(() => ({ on: window.__lineHalfMask.getState().enhanceOn, canvas: !!document.getElementById("line-half-mask-enhance") }));
+  const afterEsc = await page.evaluate(() => ({ on: window.__lineHalfMask.getState().selectionOn, canvas: !!document.getElementById("line-half-mask-root") }));
   check("Esc ends the effect and removes the canvas", afterEsc.on === false && afterEsc.canvas === false, afterEsc);
 
   await selectPara(page);
-  await page.evaluate(() => window.__lineHalfMask.enhanceSelection());
+  await page.evaluate(() => window.__lineHalfMask.overlaySelection({ fill: "enhance" }));
   await page.mouse.click(790, 880);
-  const afterOut = await page.evaluate(() => ({ on: window.__lineHalfMask.getState().enhanceOn, canvas: !!document.getElementById("line-half-mask-enhance") }));
+  const afterOut = await page.evaluate(() => ({ on: window.__lineHalfMask.getState().selectionOn, canvas: !!document.getElementById("line-half-mask-root") }));
   check("a click outside the enhanced lines ends the effect", afterOut.on === false && afterOut.canvas === false, afterOut);
 
   // タッチ: 範囲の外のタップで終わる
   await selectPara(page);
-  await page.evaluate(() => window.__lineHalfMask.enhanceSelection());
+  await page.evaluate(() => window.__lineHalfMask.overlaySelection({ fill: "enhance" }));
   await page.evaluate(() => {
     const fire = (type, x, y) => {
       const t = new Touch({ identifier: 1, target: document.body, clientX: x, clientY: y });
@@ -368,31 +369,31 @@ const setCfg = (page, cfg) => page.evaluate((cfg) => window.__lineHalfMask.setEn
     };
     fire("touchstart", 700, 850); fire("touchend", 700, 850);
   });
-  const afterTap = await page.evaluate(() => window.__lineHalfMask.getState().enhanceOn);
+  const afterTap = await page.evaluate(() => window.__lineHalfMask.getState().selectionOn);
   check("a tap outside the enhanced lines ends the effect (touch)", afterTap === false, afterTap);
 
-  // 背面と排他: マスクを始めると視覚増強は終わる
+  // 同じ重ねの上で塗りだけが切り替わる（キャンバスは一つのまま）。
   await selectPara(page);
-  await page.evaluate(() => window.__lineHalfMask.enhanceSelection());
+  await page.evaluate(() => window.__lineHalfMask.overlaySelection({ fill: "enhance" }));
   await selectPara(page, "p-en");
   const both = await page.evaluate(() => {
-    window.__lineHalfMask.maskSelection();
+    window.__lineHalfMask.overlaySelection({ fill: "black" });
     const s = window.__lineHalfMask.getState();
-    return { enh: s.enhanceOn, sel: s.selectionOn, enhCanvas: !!document.getElementById("line-half-mask-enhance") };
+    return { fill: s.fill, sel: s.selectionOn, canvases: document.querySelectorAll("canvas[id^=line-half-mask]").length, fx: !!window.__lineHalfMask.fxInfo() };
   });
-  check("starting the half mask on a selection replaces the enhance effect", both.enh === false && both.sel === true && both.enhCanvas === false, both);
+  check("starting again with the black fill replaces the enhance fill on the same single canvas", both.fill === "black" && both.sel === true && both.canvases === 1 && both.fx === false, both);
   await selectPara(page);
   const swapped = await page.evaluate(() => {
-    window.__lineHalfMask.enhanceSelection();
+    window.__lineHalfMask.overlaySelection({ fill: "enhance" });
     const s = window.__lineHalfMask.getState();
-    return { enh: s.enhanceOn, sel: s.selectionOn };
+    return { fill: s.fill, sel: s.selectionOn, canvases: document.querySelectorAll("canvas[id^=line-half-mask]").length, fx: !!window.__lineHalfMask.fxInfo() };
   });
-  check("starting enhance replaces the selection mask", swapped.enh === true && swapped.sel === false, swapped);
+  check("starting again with the enhance fill switches back on the same single canvas", swapped.fill === "enhance" && swapped.sel === true && swapped.canvases === 1 && swapped.fx === true, swapped);
   const noSel = await page.evaluate(() => {
-    window.__lineHalfMask.endEnhance();
+    window.__lineHalfMask.endSelection();
     getSelection().removeAllRanges();
     document.dispatchEvent(new Event("selectionchange"));
-    return window.__lineHalfMask.enhanceSelection();
+    return window.__lineHalfMask.overlaySelection({ fill: "enhance" });
   });
   check("with the selection gone, the remembered one (within 60 s) is used", noSel === true);
   await page.close();
@@ -402,9 +403,9 @@ const setCfg = (page, cfg) => page.evaluate((cfg) => window.__lineHalfMask.setEn
 {
   const page = await openPage();
   await selectPara(page);
-  await page.evaluate(() => window.__lineHalfMask.enhanceSelection());
+  await page.evaluate(() => window.__lineHalfMask.overlaySelection({ fill: "enhance" }));
   await setCfg(page, { speed: 0, width: 3, color: 1 });
-  const cfg = await page.evaluate(() => window.__lineHalfMask.enhanceInfo().cfg);
+  const cfg = await page.evaluate(() => window.__lineHalfMask.fxInfo().cfg);
   check("live settings update the running effect", cfg.width === 3 && cfg.color === 1 && cfg.speed === 0, cfg);
   await page.close();
 }
@@ -425,11 +426,11 @@ const setCfg = (page, cfg) => page.evaluate((cfg) => window.__lineHalfMask.setEn
     scrollTo(0, el.offsetTop - 110);
   });
   await page.evaluate(() => {
-    window.__lineHalfMask.enhanceSelection();
+    window.__lineHalfMask.overlaySelection({ fill: "enhance" });
     window.__lineHalfMask.setEnhance({ speed: 0, width: 8, rotate: false });
-    window.__lineHalfMask.enhanceAt(0);
+    window.__lineHalfMask.showAt(0);
   });
-  const info = await page.evaluate(() => JSON.parse(JSON.stringify(window.__lineHalfMask.enhanceInfo())));
+  const info = await page.evaluate(() => JSON.parse(JSON.stringify(window.__lineHalfMask.fxInfo())));
   const minL = Math.min(...info.rects.map((r) => r.left));
   const firstL = info.rects[0].left;
   check("origin is the bounding box, even when the first line starts further right",
@@ -442,7 +443,7 @@ const setCfg = (page, cfg) => page.evaluate((cfg) => window.__lineHalfMask.setEn
 // 選択がなければ何も始まらない
 {
   const page = await openPage();
-  const r = await page.evaluate(() => ({ ok: window.__lineHalfMask.enhanceSelection(), canvas: !!document.getElementById("line-half-mask-enhance") }));
+  const r = await page.evaluate(() => ({ ok: window.__lineHalfMask.overlaySelection({ fill: "enhance" }), canvas: !!document.getElementById("line-half-mask-root") }));
   check("without any selection nothing starts", r.ok === false && r.canvas === false, r);
   await page.close();
 }
@@ -451,12 +452,12 @@ const setCfg = (page, cfg) => page.evaluate((cfg) => window.__lineHalfMask.setEn
 {
   const page = await openPage({ width: 800, height: 420 });
   await selectPara(page, "p-ja");
-  await page.evaluate(() => { window.__lineHalfMask.enhanceSelection(); window.__lineHalfMask.setEnhance({ speed: 0, width: 4 }); window.__lineHalfMask.enhanceAt(0); });
-  const before = await page.evaluate(() => JSON.parse(JSON.stringify(window.__lineHalfMask.enhanceInfo())));
+  await page.evaluate(() => { window.__lineHalfMask.overlaySelection({ fill: "enhance" }); window.__lineHalfMask.setEnhance({ speed: 0, width: 4 }); window.__lineHalfMask.showAt(0); });
+  const before = await page.evaluate(() => JSON.parse(JSON.stringify(window.__lineHalfMask.fxInfo())));
   const imgBefore = await readCanvas(page);
   await page.evaluate(() => scrollBy(0, 50));
   await page.waitForTimeout(250);
-  const after = await page.evaluate(() => JSON.parse(JSON.stringify(window.__lineHalfMask.enhanceInfo())));
+  const after = await page.evaluate(() => JSON.parse(JSON.stringify(window.__lineHalfMask.fxInfo())));
   const imgAfter = await readCanvas(page);
   const r = before.rects[0], r2 = after.rects[0];
   let same = true;
@@ -484,11 +485,11 @@ const setCfg = (page, cfg) => page.evaluate((cfg) => window.__lineHalfMask.setEn
     range.selectNodeContents(document.body);
     const sel = getSelection(); sel.removeAllRanges(); sel.addRange(range);
     document.dispatchEvent(new Event("selectionchange"));
-    window.__lineHalfMask.enhanceSelection();
+    window.__lineHalfMask.overlaySelection({ fill: "enhance" });
     window.__lineHalfMask.setEnhance({ speed: 0, width: 8 });
-    window.__lineHalfMask.enhanceAt(0);
-    const c = document.getElementById("line-half-mask-enhance");
-    const info = window.__lineHalfMask.enhanceInfo();
+    window.__lineHalfMask.showAt(0);
+    const c = document.getElementById("line-half-mask-root");
+    const info = window.__lineHalfMask.fxInfo();
     return {
       canvasH: c.height, n: info.rects.length,
       minTop: Math.min(...info.rects.map((x) => x.top)),
@@ -510,11 +511,11 @@ const setCfg = (page, cfg) => page.evaluate((cfg) => window.__lineHalfMask.setEn
     range.selectNodeContents(document.body);
     const sel = getSelection(); sel.removeAllRanges(); sel.addRange(range);
     document.dispatchEvent(new Event("selectionchange"));
-    window.__lineHalfMask.enhanceSelection();
+    window.__lineHalfMask.overlaySelection({ fill: "enhance" });
     window.__lineHalfMask.setEnhance({ speed: 0, width: 1 });
     const t0 = performance.now();
-    for (let i = 0; i < 20; i++) window.__lineHalfMask.enhanceAt(i * 0.1);
-    const rects = window.__lineHalfMask.enhanceInfo().rects;
+    for (let i = 0; i < 20; i++) window.__lineHalfMask.showAt(i * 0.1);
+    const rects = window.__lineHalfMask.fxInfo().rects;
     return { ms: (performance.now() - t0) / 20, area: rects.reduce((a, r) => a + r.width * r.height, 0) };
   });
   check("painting over 500,000 pixels takes under 25 ms per frame", t.area > 500000 && t.ms < 25, t);
@@ -524,18 +525,18 @@ const setCfg = (page, cfg) => page.evaluate((cfg) => window.__lineHalfMask.setEn
 // ---------- ポップアップ ----------
 {
   const stubScript = (os) => `
-    window.__storage = {};
+    window.__storage = { fill: "enhance" };
     window.__sets = [];
     window.__messages = [];
-    window.__enhanceOn = false;
+    window.__sel = false;
     const api = {
       tabs: {
         query: async () => [{ id: 1 }],
         sendMessage: async (_id, msg) => {
           window.__messages.push(msg.type);
-          if (msg.type === "enhanceSelection") { window.__enhanceOn = !!window.__hasSelection; return { ok: !!window.__hasSelection, enhanceOn: window.__enhanceOn }; }
-          if (msg.type === "endEnhance") { window.__enhanceOn = false; return { enhanceOn: false }; }
-          return { on: false, parity: 0, enhanceOn: window.__enhanceOn };
+          if (msg.type === "overlaySelection") { window.__sel = !!window.__hasSelection; return { ok: !!window.__hasSelection, selectionOn: window.__sel }; }
+          if (msg.type === "endSelection") { window.__sel = false; return { selectionOn: false }; }
+          return { on: false, parity: 0, selectionOn: window.__sel };
         },
       },
       storage: { local: {
@@ -554,7 +555,7 @@ const setCfg = (page, cfg) => page.evaluate((cfg) => window.__lineHalfMask.setEn
     const ui = await page.evaluate(() => {
       const txt = (id) => document.getElementById(id).textContent;
       return {
-        btn: document.getElementById("enhance-selection").textContent,
+        btn: document.getElementById("overlay-selection").textContent,
         speed: txt("enh-speed-v"), width: txt("enh-width-v"), rot: txt("enh-rot-v"), hue: txt("enh-hue-v"), dist: txt("enh-dist-v"), hint: txt("enh-hint"),
         autoPanelHidden: document.getElementById("enh-auto-panel").hidden,
         manualHidden: document.getElementById("enh-manual-panel").hidden,
@@ -566,7 +567,7 @@ const setCfg = (page, cfg) => page.evaluate((cfg) => window.__lineHalfMask.setEn
         text: document.body.innerText,
       };
     });
-    check(`popup (${os}): defaults shown like the app`, ui.btn === "選択範囲に視覚増強" && ui.speed === "速さ 3 px/秒" && ui.width === "縞の幅 1 px" &&
+    check(`popup (${os}): defaults shown like the app`, ui.btn === "選択範囲に重ねる" && ui.speed === "速さ 3 px/秒" && ui.width === "縞の幅 1 px" &&
       ui.dist === "変化の大きさ 1×" && ui.autoPanelHidden && !ui.manualHidden && ui.rotHidden && ui.colorHidden && ui.dir === "1" && ui.rotdir === "1" && ui.color === "0", ui);
     check(`popup (${os}): no ellipses in the UI text`, !/[…]|\.\.\./.test(ui.text), null);
 
@@ -614,24 +615,24 @@ const setCfg = (page, cfg) => page.evaluate((cfg) => window.__lineHalfMask.setEn
     // ボタン: 選択がなければ案内、あれば始めて「止める」に変わる
     const noSelMsg = await page.evaluate(async () => {
       window.__hasSelection = false;
-      document.getElementById("enhance-selection").click();
+      document.getElementById("overlay-selection").click();
       await new Promise((r) => setTimeout(r, 100));
       return document.getElementById("status").textContent;
     });
     const started = await page.evaluate(async () => {
       window.__hasSelection = true;
-      document.getElementById("enhance-selection").click();
+      document.getElementById("overlay-selection").click();
       await new Promise((r) => setTimeout(r, 100));
-      return { label: document.getElementById("enhance-selection").textContent, status: document.getElementById("status").textContent };
+      return { label: document.getElementById("overlay-selection").textContent, status: document.getElementById("status").textContent };
     });
     const stopped = await page.evaluate(async () => {
-      document.getElementById("enhance-selection").click();
+      document.getElementById("overlay-selection").click();
       await new Promise((r) => setTimeout(r, 150));
-      return { label: document.getElementById("enhance-selection").textContent, msgs: window.__messages.filter((m) => /nhance/.test(m)) };
+      return { label: document.getElementById("overlay-selection").textContent, msgs: window.__messages.filter((m) => /Selection/.test(m)) };
     });
     check(`popup (${os}): the button asks for a selection, starts, then stops`,
-      noSelMsg === "先にページの文字を選択してください" && started.label === "視覚増強を止める" && stopped.label === "選択範囲に視覚増強" &&
-      stopped.msgs.join(",") === "enhanceSelection,enhanceSelection,endEnhance", { noSelMsg, started, stopped });
+      noSelMsg === "先にページの文字を選択してください" && started.label === "重ねるのを止める" && stopped.label === "選択範囲に重ねる" &&
+      stopped.msgs.join(",") === "overlaySelection,overlaySelection,endSelection", { noSelMsg, started, stopped });
     await page.close();
   }
 

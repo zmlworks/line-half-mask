@@ -50,10 +50,10 @@ await page.evaluate(() => {
   scrollTo(0, el.offsetTop - 110);
 });
 await page.waitForTimeout(100);
-await page.evaluate(() => window.__lineHalfMask.enhanceSelection());
+await page.evaluate(() => window.__lineHalfMask.overlaySelection({ fill: "enhance" }));
 
 const shot = async (name, cfg, t) => {
-  await page.evaluate(([cfg, t]) => { window.__lineHalfMask.setEnhance(cfg); window.__lineHalfMask.enhanceAt(t); }, [cfg, t]);
+  await page.evaluate(([cfg, t]) => { window.__lineHalfMask.setEnhance(cfg); window.__lineHalfMask.showAt(t); }, [cfg, t]);
   await page.screenshot({ path: path.join(shotDir, name) });
 };
 await shot("enhance-bw.png", { speed: 0, width: 6, color: 0 }, 0);
@@ -68,16 +68,19 @@ const cfg = { speed: 40, width: 8, color: 1, hueRate: 20, rotate: true, rotSpeed
 await page.evaluate((cfg) => window.__lineHalfMask.setEnhance(cfg), cfg);
 const N = 60;
 for (let i = 0; i < N; i++) {
-  await page.evaluate((t) => window.__lineHalfMask.enhanceAt(t), i / 10);
+  await page.evaluate((t) => window.__lineHalfMask.showAt(t), i / 10);
   await page.screenshot({ path: path.join(frames, `f${String(i).padStart(3, "0")}.png`), clip: { x: 0, y: 60, width: 560, height: 360 } });
 }
-// ポップアップ（回転と色モードを開いた状態）
-{
+// ポップアップ: 視覚増強（回転と色モードを開いた状態）と、黒塗り
+for (const [name, storage] of [
+  ["popup-enhance.png", { fill: "enhance", coverage: "top", enhance: { rotate: true, rotSpeed: 0.5, color: 1, hueRate: 2, speed: 3, width: 4 } }],
+  ["popup-black.png", {}],
+]) {
   const pop = await browser.newPage({ viewport: { width: 260, height: 1000 } });
   await pop.addInitScript({ content: `
-    window.__storage = { enhance: { rotate: true, rotSpeed: 0.5, color: 1, hueRate: 2, speed: 3, width: 4 } };
+    window.__storage = ${JSON.stringify(storage)};
     const api = {
-      tabs: { query: async () => [{ id: 1 }], sendMessage: async () => ({ on: false, parity: 0, enhanceOn: false }) },
+      tabs: { query: async () => [{ id: 1 }], sendMessage: async () => ({ on: false, parity: 0, selectionOn: false }) },
       storage: { local: {
         get: async (k) => (typeof k === "string" ? { [k]: window.__storage[k] } : Object.assign({}, window.__storage)),
         set: async (o) => { Object.assign(window.__storage, o); },
@@ -87,7 +90,7 @@ for (let i = 0; i < N; i++) {
     window.browser = api; window.chrome = api;` });
   await pop.goto(base + "/src/popup.html", { waitUntil: "load" });
   await pop.waitForTimeout(200);
-  await pop.screenshot({ path: path.join(shotDir, "popup-enhance.png"), fullPage: true });
+  await pop.screenshot({ path: path.join(shotDir, name), fullPage: true });
   await pop.close();
 }
 
