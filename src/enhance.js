@@ -153,6 +153,10 @@
     const wandering = c.auto || (c.rotate && c.wander);
     let autoT = 0, autoFlow = 0, autoAng = BASE_ANGLE;
     let prev = null, comp = 0;
+    function resize(nw, nh) {
+      if (nw > 0) w = nw;
+      if (nh > 0) h = nh;
+    }
     function pose(t) {
       t = Math.max(0, t);
       let ang = BASE_ANGLE, flow;
@@ -180,7 +184,7 @@
         width, rotating,
       };
     }
-    return { pose, width };
+    return { pose, width, resize };
   }
 
   // 点サンプリングで塗る。どの画素も c0 か c1 の一色（アンチエイリアスなし）。

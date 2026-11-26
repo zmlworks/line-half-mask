@@ -872,8 +872,9 @@
   }
 
   // ---- 視覚増強 ----
-  // 選択範囲の各行（見えている部分）を、視覚増強器と同じ斜めの縞で置き換える。
-  // 縞は選択の先頭行の左上に固定した座標で決めるので、スクロールにも付いてくる。
+  // 選択したすべての行を包む一つの四角を、縞の場と回転の軸の範囲にする。
+  // アプリが画面全体を一つの場にするのと同じで、各行はその場を見る窓として塗る。
+  // スクロールや組み直しのあとも、いまの行の位置から四角をやり直す。
   // 1 画素ずつ二色のどちらかを決めて ImageData で描く（縁をぼかさない）。
   function enhK() {
     return (window.devicePixelRatio || 1) / clientScale(enh.canvas);
@@ -894,28 +895,31 @@
     return { lines, rects };
   }
 
-  // 縞の座標系の原点（先頭行の左上）と、回転の軸を決める領域（開始時に見えていた範囲）を求める。
-  function enhAnchor(lines) {
-    const k = enhK();
-    const a = lines[0];
-    if (a) { enh.ax = Math.round(a.left * k); enh.ay = Math.round(a.top * k); }
-  }
-
-  function enhBox(lines, rects) {
+  // 画面外の行も含め、選択したすべての行を包む四角。原点はその左上。
+  function enhBounds(lines) {
     const k = enhK();
     let l = Infinity, t = Infinity, r = -Infinity, b = -Infinity;
-    const list = rects.length ? rects : lines.map((x) => ({
-      left: x.left, top: x.top, width: x.right - x.left, height: x.bottom - x.top
-    }));
-    for (const x of list) {
-      l = Math.min(l, x.left); t = Math.min(t, x.top);
-      r = Math.max(r, x.left + x.width); b = Math.max(b, x.top + x.height);
+    for (const x of lines) {
+      if (!x) continue;
+      l = Math.min(l, x.left);
+      t = Math.min(t, x.top);
+      r = Math.max(r, x.right);
+      b = Math.max(b, x.bottom);
     }
-    if (!Number.isFinite(l)) return { x: 0, y: 0, w: 1, h: 1 };
-    return {
-      x: Math.round(l * k) - enh.ax, y: Math.round(t * k) - enh.ay,
-      w: Math.max(1, Math.round((r - l) * k)), h: Math.max(1, Math.round((b - t) * k))
-    };
+    if (!Number.isFinite(l)) return { ax: 0, ay: 0, w: 1, h: 1 };
+    const ax = Math.round(l * k), ay = Math.round(t * k);
+    return { ax, ay, w: Math.max(1, Math.round(r * k) - ax), h: Math.max(1, Math.round(b * k) - ay) };
+  }
+
+  function enhApplyBounds(lines) {
+    const b = enhBounds(lines);
+    enh.ax = b.ax;
+    enh.ay = b.ay;
+    if (!enh.box) enh.box = { w: b.w, h: b.h };
+    else { enh.box.w = b.w; enh.box.h = b.h; }
+    enh.reach = Math.hypot(b.w, b.h);
+    if (enh.motion && enh.motion.resize) enh.motion.resize(b.w, b.h);
+    return b;
   }
 
   function enhDraw() {
@@ -960,16 +964,13 @@
   }
 
   function enhPoseAt(t) {
-    const p = enh.motion.pose(t);
-    p.px += enh.box.x;
-    p.py += enh.box.y;
-    return p;
+    return enh.motion.pose(t);
   }
 
   function enhRelayout() {
     const lay = enhLayout();
-    enhAnchor(lay.lines);
     enh.rects = lay.rects;
+    enhApplyBounds(lay.lines);
     enhDraw();
   }
 
@@ -1007,11 +1008,9 @@
 
   function enhStartMotion(t0) {
     const lay = enhLayout();
-    enhAnchor(lay.lines);
     enh.rects = lay.rects;
-    enh.box = enhBox(lay.lines, lay.rects);
-    enh.reach = Math.hypot(enh.box.w, enh.box.h);
-    enh.motion = ENH.createMotion(enhCfg, enh.seed, enh.box.w, enh.box.h);
+    const b = enhApplyBounds(lay.lines);
+    enh.motion = ENH.createMotion(enhCfg, enh.seed, b.w, b.h);
     enh.t0 = t0;
     enh.pose = enhPoseAt(0);
     enh.drawn = null;

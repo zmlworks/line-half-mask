@@ -90,6 +90,11 @@ const near = (a, b, eps = 1e-3) => Math.abs(a - b) <= eps;
   const rot2 = E.createMotion(Object.assign(E.defaults(), { rotate: true, rotSpeed: 90, speed: 0 }), 1, 400, 300).pose;
   const c = rot2(0.7);
   check("rotation without wander keeps the pivot at the region centre", near(c.px, 200) && near(c.py, 150), c);
+  const rs = E.createMotion(Object.assign(E.defaults(), { speed: 0 }), 1, 200, 100);
+  const r0 = rs.pose(0);
+  rs.resize(400, 300);
+  const r1 = rs.pose(0);
+  check("resize updates the pivot domain to the new box", near(r0.px, 100) && near(r0.py, 50) && near(r1.px, 200) && near(r1.py, 150), { r0, r1 });
 
   // 軸が動いても、縞が跳ねない（領域の隅の位相が 1/60 秒で 1 px 以上動かない）。
   const wm = E.createMotion(Object.assign(E.defaults(), { rotate: true, rotSpeed: 1, wander: true, speed: 0, width: 8 }), 7, 400, 300);
@@ -233,6 +238,17 @@ const setCfg = (page, cfg) => page.evaluate((cfg) => window.__lineHalfMask.setEn
   check("every pixel of the selected lines is the app's black or white; outside stays transparent",
     inside > 100000 && wrongInside === 0 && wrongOutside === 0 && odd === 0, { inside, outside, wrongInside, wrongOutside, rects: info.rects.length });
   check("one rect per selected line (7 lines of 本文) matching the text boxes", info.rects.length === 7 && info.rects.every((r) => r.height > 30 && r.width > 500), info.rects);
+  {
+    const minL = Math.min(...info.rects.map((r) => r.left));
+    const minT = Math.min(...info.rects.map((r) => r.top));
+    const maxR = Math.max(...info.rects.map((r) => r.left + r.width));
+    const maxB = Math.max(...info.rects.map((r) => r.top + r.height));
+    const bw = Math.round(maxR) - Math.round(minL), bh = Math.round(maxB) - Math.round(minT);
+    check("one bounding box covers every selected line; origin is its top-left; pivot is its centre",
+      info.ax === Math.round(minL) && info.ay === Math.round(minT) && info.box.w === bw && info.box.h === bh &&
+      near(info.pose.px, bw / 2) && near(info.pose.py, bh / 2),
+      { ax: info.ax, ay: info.ay, box: info.box, pose: info.pose, minL, minT, bw, bh });
+  }
   const hit = await page.evaluate((r) => {
     const el = document.elementFromPoint(r.left + 40, r.top + r.height / 2);
     return { tag: el && el.tagName, id: el && el.id };
@@ -303,6 +319,28 @@ const setCfg = (page, cfg) => page.evaluate((cfg) => window.__lineHalfMask.setEn
   await page.evaluate(() => window.__lineHalfMask.enhanceAt(0.5));
   info = await page.evaluate(() => JSON.parse(JSON.stringify(window.__lineHalfMask.enhanceInfo())));
   check("rotation: 90 °/s clockwise gives 45 + 45 degrees at 0.5 s", near(info.pose.angle, Math.PI / 2, 1e-6), info.pose);
+  // 各行の左上から同じ局所座標ではなく、包む四角を共有した場として続く（90 度なら横縞）。
+  await setCfg(page, { auto: false, rotate: true, rotSpeed: 45, speed: 0, width: 8, wander: false });
+  await page.evaluate(() => window.__lineHalfMask.enhanceAt(1));
+  info = await page.evaluate(() => JSON.parse(JSON.stringify(window.__lineHalfMask.enhanceInfo())));
+  img = await readCanvas(page);
+  {
+    let bad = 0, sameLocal = 0, compared = 0;
+    const a = info.rects[1], b = info.rects[2];
+    for (let dx = 8; dx < Math.min(a.width, b.width) - 8; dx += 4) {
+      const ya = Math.round(a.top + 8), yb = Math.round(b.top + 8);
+      const x = Math.round(a.left + dx);
+      const ca = pixelAt(img, x, ya), cb = pixelAt(img, x, yb);
+      if (ca[0] !== expectedColor(info, x, ya, 0, 255)) bad++;
+      if (cb[0] !== expectedColor(info, x, yb, 0, 255)) bad++;
+      compared++;
+      if (ca[0] === cb[0] && ca[3] === 255 && cb[3] === 255) sameLocal++;
+    }
+    check("rotated stripes are one field through the lines (not a fresh origin on each line)",
+      near(info.pose.angle, Math.PI / 2, 1e-6) && near(info.pose.px, info.box.w / 2) && near(info.pose.py, info.box.h / 2) &&
+      bad === 0 && sameLocal < compared * 0.5,
+      { angle: info.pose.angle, bad, sameLocal, compared, box: info.box, pose: info.pose });
+  }
 
   // 終わり方: 範囲の中のクリックでは続き、Esc で終わる
   await page.mouse.move(info.rects[2].left + 50, info.rects[2].top + 10);
@@ -371,6 +409,36 @@ const setCfg = (page, cfg) => page.evaluate((cfg) => window.__lineHalfMask.setEn
   await page.close();
 }
 
+// 先頭行だけ短い選択でも、原点は包む四角の左上（先頭行の左上ではない）。
+{
+  const page = await openPage({ width: 800, height: 560 });
+  await page.evaluate(() => {
+    const el = document.getElementById("p-en");
+    const node = el.firstChild;
+    const range = document.createRange();
+    range.setStart(node, 20);
+    range.setEnd(node, 230);
+    const sel = getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    document.dispatchEvent(new Event("selectionchange"));
+    scrollTo(0, el.offsetTop - 110);
+  });
+  await page.evaluate(() => {
+    window.__lineHalfMask.enhanceSelection();
+    window.__lineHalfMask.setEnhance({ speed: 0, width: 8, rotate: false });
+    window.__lineHalfMask.enhanceAt(0);
+  });
+  const info = await page.evaluate(() => JSON.parse(JSON.stringify(window.__lineHalfMask.enhanceInfo())));
+  const minL = Math.min(...info.rects.map((r) => r.left));
+  const firstL = info.rects[0].left;
+  check("origin is the bounding box, even when the first line starts further right",
+    firstL > minL + 20 && info.ax === Math.round(minL) && info.ax < Math.round(firstL) - 10 &&
+    near(info.pose.px, info.box.w / 2) && near(info.pose.py, info.box.h / 2),
+    { firstL, minL, ax: info.ax, box: info.box, pose: info.pose, rects: info.rects });
+  await page.close();
+}
+
 // 選択がなければ何も始まらない
 {
   const page = await openPage();
@@ -401,21 +469,36 @@ const setCfg = (page, cfg) => page.evaluate((cfg) => window.__lineHalfMask.setEn
   }
   check("scrolling moves the rects and the stripes stay fixed to the text (first line identical)",
     near(r.top - r2.top, 50, 1.01) && same, { moved: r.top - r2.top, same });
+  check("scroll recomputes the shared box from the selection; size stays, origin follows the text",
+    after.box.w === before.box.w && after.box.h === before.box.h &&
+    near(before.ay - after.ay, 50, 1.01) && near(after.pose.px, after.box.w / 2) && near(after.pose.py, after.box.h / 2),
+    { before: { ay: before.ay, box: before.box }, after: { ay: after.ay, box: after.box, pose: after.pose } });
   await page.close();
 }
 
-// 長い選択でも、見えている行だけを描く
+// 長い選択でも、見えている行だけを描く。場の四角は選択全体。
 {
   const page = await openPage({ width: 800, height: 300 });
-  await page.evaluate(() => scrollTo(0, document.getElementById("p-en").offsetTop - 20));
-  await selectPara(page, "p-en");
   const r = await page.evaluate(() => {
+    const range = document.createRange();
+    range.selectNodeContents(document.body);
+    const sel = getSelection(); sel.removeAllRanges(); sel.addRange(range);
+    document.dispatchEvent(new Event("selectionchange"));
     window.__lineHalfMask.enhanceSelection();
+    window.__lineHalfMask.setEnhance({ speed: 0, width: 8 });
+    window.__lineHalfMask.enhanceAt(0);
     const c = document.getElementById("line-half-mask-enhance");
-    const rects = window.__lineHalfMask.enhanceInfo().rects;
-    return { h: c.height, n: rects.length, minTop: Math.min(...rects.map((x) => x.top)), maxBottom: Math.max(...rects.map((x) => x.top + x.height)) };
+    const info = window.__lineHalfMask.enhanceInfo();
+    return {
+      canvasH: c.height, n: info.rects.length,
+      minTop: Math.min(...info.rects.map((x) => x.top)),
+      maxBottom: Math.max(...info.rects.map((x) => x.top + x.height)),
+      box: info.box, ay: info.ay, py: info.pose.py,
+    };
   });
-  check("long selections are drawn only inside the viewport", r.h === 300 && r.n > 0 && r.minTop >= 0 && r.maxBottom <= 300, r);
+  check("long selections are drawn only inside the viewport", r.canvasH === 300 && r.n > 0 && r.minTop >= 0 && r.maxBottom <= 300, r);
+  check("the shared box is the full selection, not just the visible slice, and the pivot scales to it",
+    r.box.h > 300 && r.ay + r.box.h > 300 && Math.abs(r.py - r.box.h / 2) < 1e-6, r);
   await page.close();
 }
 

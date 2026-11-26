@@ -59,6 +59,8 @@ const shot = async (name, cfg, t) => {
 await shot("enhance-bw.png", { speed: 0, width: 6, color: 0 }, 0);
 await shot("enhance-color.png", { speed: 0, width: 8, color: 1, hueRate: 2 }, 0);
 await shot("enhance-auto.png", { auto: true, color: 1, hueRate: 6 }, 40);
+// 90 度（横縞）で、行をまたいで一つの場として続くことを見せる。
+await shot("enhance-rotate.png", { speed: 0, width: 8, color: 0, rotate: true, rotSpeed: 45 }, 1);
 
 // GIF: 色モード、回転（軸が動く）、流れ。20 コマ/秒で 6 秒。
 const frames = fs.mkdtempSync(path.join(os.tmpdir(), "lhm-gif-"));
