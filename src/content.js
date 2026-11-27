@@ -25,6 +25,7 @@
   // 十字の配置。矢印キーはその方向の範囲を直接選ぶ（カーソル移動ではない）。
   const KEY_COVERAGE = { ArrowLeft: "full", ArrowRight: "off", ArrowUp: "top", ArrowDown: "bottom" };
   const PAD_ITEMS = [["top", "up"], ["full", "left"], ["off", "right"], ["bottom", "down"]];
+  const INLINE_DISPLAY = /^(inline|contents|ruby)/;
   const SKIP_TAGS = new Set([
     "SCRIPT", "STYLE", "NOSCRIPT", "TEXTAREA", "INPUT", "SELECT",
     "OPTION", "SVG", "CANVAS", "VIDEO", "AUDIO", "IMG", "RT", "RP"
@@ -669,18 +670,41 @@
     return false;
   }
 
-  function ancestorClip(el) {
-    const clip = { left: 0, top: 0, right: innerWidth, bottom: innerHeight };
-    for (let e = el; e && e !== document.documentElement; e = e.parentElement) {
-      const st = getComputedStyle(e);
-      if (st.overflowX === "visible" && st.overflowY === "visible") continue;
-      const cr = e.getBoundingClientRect();
-      clip.left = Math.max(clip.left, cr.left);
-      clip.top = Math.max(clip.top, cr.top);
-      clip.right = Math.min(clip.right, cr.right);
-      clip.bottom = Math.min(clip.bottom, cr.bottom);
+  // 行を数える「箱」は、inline 系（inline・inline-block・inline-flex など）をまたいだ先の、最初の block 系の祖先。
+  // flex や grid の子は block 系になるので、それぞれが別の箱になる。
+  // clip は、overflow が visible でない祖先の四角の重なり（ビューポートは含めない）。
+  // 要素ごとに一度だけ調べて、同じ走査の中で使い回す。
+  function boxInfo(el, cache) {
+    let r = cache.get(el);
+    if (r) return r;
+    const doc = document.documentElement;
+    if (!el || el === doc) {
+      r = { box: el, clip: null };
+    } else {
+      const st = getComputedStyle(el);
+      const host = el.getRootNode && el.getRootNode().host;
+      const up = boxInfo(el.parentElement || host || doc, cache);
+      let clip = up.clip;
+      if (st.overflowX !== "visible" || st.overflowY !== "visible") {
+        const cr = el.getBoundingClientRect();
+        clip = clip
+          ? { left: Math.max(clip.left, cr.left), top: Math.max(clip.top, cr.top), right: Math.min(clip.right, cr.right), bottom: Math.min(clip.bottom, cr.bottom) }
+          : { left: cr.left, top: cr.top, right: cr.right, bottom: cr.bottom };
+      }
+      r = { box: INLINE_DISPLAY.test(st.display) ? up.box : el, clip };
     }
-    return clip;
+    cache.set(el, r);
+    return r;
+  }
+
+  // 行の四角を、祖先の clip とビューポートで切ったもの。
+  function visibleBox(line) {
+    const c = line.clip;
+    const left = Math.max(line.left, c ? c.left : 0, 0);
+    const top = Math.max(line.top, c ? c.top : 0, 0);
+    const right = Math.min(line.right, c ? c.right : Infinity, innerWidth);
+    const bottom = Math.min(line.bottom, c ? c.bottom : Infinity, innerHeight);
+    return { left, top, right, bottom };
   }
 
   function sameLine(a, b) {
@@ -689,27 +713,41 @@
     return minH > 0 && overlap > minH * 0.5;
   }
 
+  // 横に離れすぎていない（行の高さ以内）こと。別の段や別の列の文字を一行にしない。
+  function nearLine(a, b) {
+    const gap = Math.max(b.left - a.right, a.left - b.right);
+    return gap <= Math.min(a.bottom - a.top, b.bottom - b.top);
+  }
+
+  // 同じ箱の四角を、縦に半分以上重なり、横に近いものだけ一行にまとめる。
+  // DOM 順に並んでいるので、直前の数行だけ見れば足りる。
   function clusterLines(rects) {
-    const items = rects
-      .filter((r) => r.width > 0 && r.height > 0)
-      .sort((a, b) => a.top - b.top || a.left - b.left);
     const lines = [];
-    for (const r of items) {
-      const last = lines[lines.length - 1];
-      if (last && sameLine(last, r)) {
-        last.top = Math.min(last.top, r.top);
-        last.bottom = Math.max(last.bottom, r.bottom);
-        last.left = Math.min(last.left, r.left);
-        last.right = Math.max(last.right, r.right);
-      } else {
-        lines.push({
-          top: r.top,
-          bottom: r.bottom,
-          left: r.left,
-          right: r.right,
-          el: r.el || null
-        });
+    for (const r of rects) {
+      if (!(r.width > 0 && r.height > 0)) continue;
+      let hit = null;
+      for (let i = lines.length - 1; i >= 0 && i >= lines.length - 4; i--) {
+        if (sameLine(lines[i], r) && nearLine(lines[i], r)) { hit = lines[i]; break; }
       }
+      if (hit) {
+        hit.top = Math.min(hit.top, r.top);
+        hit.bottom = Math.max(hit.bottom, r.bottom);
+        hit.left = Math.min(hit.left, r.left);
+        hit.right = Math.max(hit.right, r.right);
+      } else {
+        lines.push({ top: r.top, bottom: r.bottom, left: r.left, right: r.right, el: r.el || null, clip: r.clip || null });
+      }
+    }
+    return lines;
+  }
+
+  // 行番号。DOM 順に一つずつ増やす。直前の行と同じ視覚行にあって右にある箱（flex や表の横並び）は同じ番号にする。
+  function numberRows(lines) {
+    let row = -1, prev = null;
+    for (const l of lines) {
+      if (!(prev && sameLine(prev, l) && l.left >= prev.left)) row += 1;
+      l.row = row;
+      prev = l;
     }
     return lines;
   }
@@ -734,30 +772,33 @@
     if (!document.body) return [];
     const nodes = [];
     collectTextNodes(document.body, nodes);
-    const rects = [];
+    const cache = new Map();
+    const groups = new Map();
     const range = document.createRange();
     for (const node of nodes) {
-      if (root && node.parentElement && root.contains(node.parentElement)) continue;
+      const el = node.parentElement || (node.getRootNode && node.getRootNode().host);
+      if (!el || (root && root.contains(el))) continue;
+      const info = boxInfo(el, cache);
+      const c = info.clip;
+      // 幅や高さが 2px 未満の枠に閉じ込められた文字（読み上げ用の隠し文字など）は行に数えない。
+      if (c && (c.right - c.left < 2 || c.bottom - c.top < 2)) continue;
       range.selectNodeContents(node);
       let list;
       try { list = range.getClientRects(); } catch (_) { continue; }
+      let rects = groups.get(info.box);
+      if (!rects) groups.set(info.box, rects = []);
       for (let i = 0; i < list.length; i++) {
         const r = list[i];
         if (r.width <= 0 || r.height <= 0) continue;
-        rects.push({
-          top: r.top,
-          bottom: r.bottom,
-          left: r.left,
-          right: r.right,
-          width: r.width,
-          height: r.height,
-          el: node.parentElement
-        });
+        rects.push({ top: r.top, bottom: r.bottom, left: r.left, right: r.right, width: r.width, height: r.height, el, clip: c });
       }
     }
-    return clusterLines(rects);
+    const lines = [];
+    for (const rects of groups.values()) {
+      for (const l of clusterLines(rects)) lines.push(l);
+    }
+    return numberRows(lines);
   }
-
 
   // 各行のどこを塗るか。選択範囲は選んだ範囲を全行に固定で、
   // ページ全体は上から通しの奇偶（奇数行は下、偶数行は上。入れ替えで逆）。
@@ -772,12 +813,12 @@
     const frac = ratio / 100;
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
-      const part = pick(i);
+      const part = pick(line.row != null ? line.row : i);
       if (part === "off") continue;
       const h = line.bottom - line.top;
       const top = part === "bottom" ? line.top + h * (1 - frac) : line.top;
       const bottom = part === "top" ? line.top + h * frac : line.bottom;
-      const clip = ancestorClip(line.el);
+      const clip = visibleBox(line);
       const t = Math.max(top, clip.top);
       const bm = Math.min(bottom, clip.bottom);
       const l = Math.max(line.left, clip.left);
@@ -790,26 +831,24 @@
 
   // 範囲を「オフ」にしても、行の位置は終了判定に使う。
   function clippedBox(line) {
-    const clip = ancestorClip(line.el);
-    const left = Math.max(line.left, clip.left);
-    const top = Math.max(line.top, clip.top);
-    const right = Math.min(line.right, clip.right);
-    const bottom = Math.min(line.bottom, clip.bottom);
-    if (right - left < 0.5 || bottom - top < 0.5) return null;
-    return { left, top, width: right - left, height: bottom - top };
+    const v = visibleBox(line);
+    if (v.right - v.left < 0.5 || v.bottom - v.top < 0.5) return null;
+    return { left: v.left, top: v.top, width: v.right - v.left, height: v.bottom - v.top };
   }
 
   // 選択範囲の Range.getClientRects を行にまとめ、各行では選択された横幅だけを対象にする。
   function collectSelectionLines(ranges) {
     if (!ranges) ranges = sel ? sel.ranges : [];
     const rects = [];
+    const cache = new Map();
     for (let i = 0; i < ranges.length; i++) {
       const range = ranges[i];
       if (!range || range.collapsed) continue;
       let list;
       try { list = range.getClientRects(); } catch (_) { continue; }
       const node = range.commonAncestorContainer;
-      const host = node && (node.nodeType === 1 ? node : node.parentElement);
+      const host = (node && (node.nodeType === 1 ? node : node.parentElement)) || document.documentElement;
+      const clip = boxInfo(host, cache).clip;
       for (let j = 0; j < list.length; j++) {
         const r = list[j];
         if (r.width <= 0 || r.height <= 0) continue;
@@ -820,11 +859,12 @@
           right: r.right,
           width: r.width,
           height: r.height,
-          el: host
+          el: host,
+          clip
         });
       }
     }
-    return clusterLines(rects);
+    return numberRows(clusterLines(rects));
   }
 
   function collect() {

@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="ja"><head><meta charset="utf-8"><title>layout</title>
+<style>
+body { margin: 0; font: 16px/24px sans-serif; }
+#wrap { display: flex; width: 900px; }
+#main { width: 560px; }
+#side { width: 300px; margin-left: 20px; }
+#main h2 { font-size: 40px; line-height: 48px; margin: 0; }
+.item { display: flex; align-items: flex-start; margin: 8px 0; }
+.item .thumb { width: 60px; height: 60px; background: #ccc; flex: none; margin-right: 8px; }
+.item .t small { display: block; font-size: 11px; line-height: 14px; }
+ul.times { list-style: none; margin: 0; padding: 0; }
+ul.times li { display: flex; }
+ul.times li span { width: 50px; }
+.pill { display: inline-block; padding: 2px 6px; background: #eee; border-radius: 4px; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; }
+</style></head>
+<body>
+<div id="wrap">
+  <div id="main">
+    <h2 id="title">大きな見出し</h2>
+    <p id="para">本文の一行目です。本文の一行目です。本文の一行目です。本文の一行目です。本文の一行目です。本文の一行目です。本文の一行目です。本文の一行目です。本文の一行目です。本文の一行目です。</p>
+    <ul class="times" id="times">
+      <li><span>10:00</span><a href="#">一つ目の予定</a></li>
+      <li><span>11:00</span><a href="#">二つ目の予定</a></li>
+      <li><span>12:00</span><a href="#">三つ目の予定</a></li>
+      <li><span>13:00</span><a href="#">四つ目の予定</a></li>
+    </ul>
+    <p id="tags"><span class="pill">タグ一</span> <span class="pill">タグ二</span> <span class="pill">タグ三</span></p>
+    <p id="srp">前の文<span class="sr" id="sr">読み上げ専用の文字</span>後の文</p>
+  </div>
+  <div id="side">
+    <div class="item"><div class="thumb"></div><div class="t"><a href="#">サイドバーの記事一件目の題名がここに入ります</a><small>2026.11.27</small></div></div>
+    <div class="item"><div class="thumb"></div><div class="t"><a href="#">サイドバーの記事二件目の題名がここに入ります</a><small>2026.11.26</small></div></div>
+  </div>
+</div>
+</body></html>
