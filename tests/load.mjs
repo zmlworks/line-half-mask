@@ -87,7 +87,7 @@ await run("inactive: script eval cost, rAF in 3 s, selectionchange", "/", async 
 
 for (const fill of ["black", "enhance"]) {
   await run(`page-wide ${fill}, static (polling only)`, "/", async (page) => {
-    await page.evaluate((fill) => { const a = window.__lineHalfMask; a.setFill(fill); a.setEnhance({ speed: 0 }); a.applyStripePrefs({ stripeSpeed: 0 }); a.start(); }, fill);
+    await page.evaluate((fill) => { const a = window.__lineHalfMask; a.setFill(fill); a.setEnhance({ speed: 0 }); a.start(); }, fill);
     return measure(page);
   });
   await run(`page-wide ${fill}, animating`, "/", async (page) => {
@@ -96,7 +96,7 @@ for (const fill of ["black", "enhance"]) {
   });
   await run(`selection ${fill} (full), static (polling only)`, "/", async (page) => {
     await select(page, 3);
-    await page.evaluate((fill) => { const a = window.__lineHalfMask; a.setEnhance({ speed: 0 }); a.applyStripePrefs({ stripeSpeed: 0 }); a.overlaySelection({ fill }); }, fill);
+    await page.evaluate((fill) => { const a = window.__lineHalfMask; a.setEnhance({ speed: 0 }); a.overlaySelection({ fill }); }, fill);
     return measure(page);
   });
   await run(`selection ${fill} (full), animating`, "/", async (page) => {

@@ -405,17 +405,31 @@ async function openPage(browser, url, viewport) {
   check("background binds menus when the API exists", threw === false, threw && String(threw));
   const item = created.find((i) => i && i.id === "line-half-mask-selection");
   check(
-    "the one context menu is labeled 選択範囲に行マスク",
+    "the selection menu item is labeled 選択範囲に行マスク",
     !!(item && item.title === "選択範囲に行マスク" && Array.isArray(item.contexts) && item.contexts.includes("selection")),
     item || created
   );
-  check("there is only one context menu item", created.length === 1, created);
-  check("menus are cleared then recreated (stale items go away)", cleared.length >= 1 && created.length === 1, { cleared: cleared.length, created: created.length });
+  const train = created.find((i) => i && i.id === "line-half-mask-train");
+  check(
+    "the no-selection menu item is labeled 範囲を指定して視覚トレーニング and is not offered for a selection",
+    !!(train && train.title === "範囲を指定して視覚トレーニング" && train.contexts.includes("page") && !train.contexts.includes("selection")),
+    train || created
+  );
+  check("there are exactly two context menu items", created.length === 2, created);
+  check("menus are cleared then recreated (stale items go away)", cleared.length >= 1 && created.length === 2, { cleared: cleared.length, created: created.length });
   check("onClicked is registered at top level (also has onInstalled/onStartup)", clickHandlers.length >= 1 && installed.length >= 1 && startups.length >= 1, { clicks: clickHandlers.length, installed: installed.length, startups: startups.length });
   await Promise.resolve(clickHandlers[0]({ menuItemId: "line-half-mask-selection", frameId: 3 }, { id: 9 }));
   check(
     "choosing the menu sends overlaySelection with a picker and without a fill (uses the current setting)",
     sent.some((s) => s.id === 9 && s.msg && s.msg.type === "overlaySelection" && s.msg.picker === true && s.msg.fill == null && s.options && s.options.frameId === 3),
+    sent
+  );
+
+  sent.length = 0;
+  await Promise.resolve(clickHandlers[0]({ menuItemId: "line-half-mask-train", frameId: 2 }, { id: 8 }));
+  check(
+    "choosing the training menu sends trainRect to that frame",
+    sent.some((s) => s.id === 8 && s.msg && s.msg.type === "trainRect" && s.options && s.options.frameId === 2),
     sent
   );
 
@@ -469,7 +483,7 @@ async function openPage(browser, url, viewport) {
 
 {
   const man = JSON.parse(fs.readFileSync(path.join(srcDir, "manifest.json"), "utf8"));
-  check("manifest declares Android support and version 0.7.2", man.version === "0.7.2" && !!man.browser_specific_settings.gecko_android && Number(man.browser_specific_settings.gecko_android.strict_min_version) >= 142 && man.browser_specific_settings.gecko.id === "line.half.mask@kofu.com", man.browser_specific_settings);
+  check("manifest declares Android support and version 0.8.0", man.version === "0.8.0" && !!man.browser_specific_settings.gecko_android && Number(man.browser_specific_settings.gecko_android.strict_min_version) >= 142 && man.browser_specific_settings.gecko.id === "line.half.mask@kofu.com", man.browser_specific_settings);
   const bgSrc = fs.readFileSync(path.join(srcDir, "background.js"), "utf8");
   check("background guards commands, menus and scripting with feature checks", /api\.commands && api\.commands\.onCommand/.test(bgSrc) && /menusApi\(\)/.test(bgSrc) && /!api\.scripting \|\| !api\.scripting\.executeScript/.test(bgSrc));
 }
@@ -507,37 +521,9 @@ await page.waitForTimeout(80);
 const stateA = await page.evaluate(() => window.__lineHalfMask.getState());
 check("start: on with parity 0", stateA.on === true && stateA.parity === 0, stateA);
 check("default mask ratio is 50", stateA.ratio === 50, stateA);
-const stripeConsts = await page.evaluate(() => ({
-  white: window.__lineHalfMask.STRIPE_WHITE,
-  black: window.__lineHalfMask.STRIPE_BLACK,
-  period: window.__lineHalfMask.STRIPE_PERIOD,
-  speed: window.__lineHalfMask.STRIPE_SPEED,
-}));
-check("stripe defaults are 8px white and 8px black at 30 px/s", stripeConsts.white === 8 && stripeConsts.black === 8 && stripeConsts.period === 16 && stripeConsts.speed === 30, stripeConsts);
-
-{
-  await page.emulateMedia({ reducedMotion: "reduce" });
-  const reduced = await page.evaluate(() => matchMedia("(prefers-reduced-motion: reduce)").matches);
-  check("prefers-reduced-motion is set (pref and emulateMedia)", reduced === true, { reduced });
-  const region = (await readMasks(page))[0];
-  const clip = {
-    x: Math.max(0, Math.floor(region.left + 2)),
-    y: Math.max(0, Math.floor(region.top + 1)),
-    width: Math.max(8, Math.min(160, Math.floor(region.width - 4))),
-    height: Math.max(4, Math.min(24, Math.floor(region.height - 2))),
-  };
-  await page.evaluate(() => window.__lineHalfMask.pause(false));
-  await page.waitForTimeout(40);
-  const shotA = await page.screenshot({ clip, type: "png" });
-  await page.waitForTimeout(350);
-  const shotB = await page.screenshot({ clip, type: "png" });
-  const same = shotA.equals(shotB);
-  check("stripe flow moves under prefers-reduced-motion (pixels differ after 350ms)", same === false, { bytesA: shotA.length, bytesB: shotB.length, same });
-}
-
 await page.evaluate(() => window.__lineHalfMask.pause(true));
 await page.waitForTimeout(50);
-const stripeInfo = await page.evaluate(() => {
+const overlayInfo = await page.evaluate(() => {
   const root = document.getElementById("line-half-mask-root");
   const cs = root ? getComputedStyle(root) : null;
   return {
@@ -545,12 +531,10 @@ const stripeInfo = await page.evaluate(() => {
     width: root ? root.width : 0,
     height: root ? root.height : 0,
     anim: cs ? cs.animationName : "",
-    flowPaused: window.__lineHalfMask.getState().flowPaused,
   };
 });
-check("stripe overlay is a canvas", stripeInfo.tag === "CANVAS" && stripeInfo.width > 0 && stripeInfo.height > 0, stripeInfo);
-check("stripe canvas is not driven by a CSS animation", !stripeInfo.anim || stripeInfo.anim === "none", stripeInfo);
-check("flow is paused by stopping the frame loop", stripeInfo.flowPaused === true, stripeInfo);
+check("overlay is a canvas", overlayInfo.tag === "CANVAS" && overlayInfo.width > 0 && overlayInfo.height > 0, overlayInfo);
+check("overlay canvas is not driven by a CSS animation", !overlayInfo.anim || overlayInfo.anim === "none", overlayInfo);
 await page.screenshot({ path: path.join(shotDir, "desktop-normal.png") });
 
 
@@ -615,10 +599,19 @@ check(
     return { black, white, other, total: data.length / 4, w: c.width, h: c.height };
   }, buf.toString("base64"));
   check(
-    "paused mask region contains both black and white stripe pixels",
-    counts.black > 10 && counts.white > 10,
+    "black mask is solid: every pixel in the region is pure black, none white",
+    counts.black === counts.total && counts.white === 0 && counts.other === 0,
     counts
   );
+}
+
+{
+  await page.evaluate(() => window.__lineHalfMask.pause(false));
+  const a = await page.evaluate(() => window.__lineHalfMask.getState().paintCount);
+  await page.waitForTimeout(700);
+  const b = await page.evaluate(() => window.__lineHalfMask.getState().paintCount);
+  check("black repaints only on position changes (no frame loop repaint while idle)", a === b, { a, b });
+  await page.evaluate(() => window.__lineHalfMask.pause(true));
 }
 
 {
@@ -635,12 +628,6 @@ check(
     return { lo: c(40), hi: c(99), nan: c("x"), mid: c(60.4), d: c(50) };
   });
   check("ratio input is clamped to 50-90 integers", clamps.lo === 50 && clamps.hi === 90 && clamps.nan === 50 && clamps.mid === 60 && clamps.d === 50, clamps);
-  const stripeClamps = await page.evaluate(() => {
-    const W = window.__lineHalfMask.clampWidth;
-    const S = window.__lineHalfMask.clampSpeed;
-    return { wlo: W(0), whi: W(20), wnan: W("x"), wmid: W(8.4), slo: S(-3), shi: S(90), smid: S(30), sz: S(0) };
-  });
-  check("stripe width is clamped to 1-16 and speed to 0-60", stripeClamps.wlo === 1 && stripeClamps.whi === 16 && stripeClamps.wnan === 8 && stripeClamps.wmid === 8 && stripeClamps.slo === 0 && stripeClamps.shi === 60 && stripeClamps.smid === 30 && stripeClamps.sz === 0, stripeClamps);
 
   await page.evaluate(() => window.__lineHalfMask.setRatio(60));
   await page.waitForTimeout(40);
@@ -836,23 +823,8 @@ if (touchA.supported) {
 }
 
 
-// Zoom stills (paused) and a short flow demo (unpaused)
+// ブラウザのズームでも範囲が合う
 {
-  await page.evaluate(() => {
-    window.__lineHalfMask.pause(true);
-    window.__lineHalfMask.update();
-  });
-  await page.waitForTimeout(50);
-  const clipBox = await page.evaluate(() => {
-    const lines = window.__lineHalfMask.collect();
-    const a = lines[2] || lines[0];
-    const b = lines[6] || lines[Math.min(lines.length - 1, 4)];
-    const left = Math.max(0, Math.floor(Math.min(a.left, b.left)));
-    const top = Math.max(0, Math.floor(a.top));
-    const right = Math.min(innerWidth, Math.ceil(Math.max(a.left + a.width, b.left + b.width)));
-    const bottom = Math.min(innerHeight, Math.ceil(b.top + b.height));
-    return { x: left, y: top, width: Math.max(8, right - left), height: Math.max(8, bottom - top) };
-  });
   for (const zoom of [1, 1.25, 1.5]) {
     await page.evaluate((z) => {
       document.documentElement.style.zoom = String(z);
@@ -864,28 +836,6 @@ if (touchA.supported) {
     const expectedZ = expectedMasks(measuredZ.all, 0, measuredZ.viewport, 50);
     const coverZ = await readCanvasCoverage(page, expectedZ, measuredZ.all);
     check("canvas pixels cover expected bands at zoom " + zoom, coverZ.ok && expectedZ.length >= 4, coverZ);
-    const tag = String(zoom).replace(".", "p");
-    await page.screenshot({ path: path.join(shotDir, "stripes-zoom-" + tag + ".png") });
-    const zclip = {
-      x: clipBox.x * zoom,
-      y: clipBox.y * zoom,
-      width: clipBox.width * zoom,
-      height: clipBox.height * zoom,
-    };
-    // Playwright clip is in CSS pixels of the viewport, not pre-zoom layout.
-    // After CSS zoom, coordinates in screenshots are typically still viewport CSS pixels.
-    try {
-      const vp = page.viewportSize();
-      const clip = {
-        x: Math.max(0, Math.round(clipBox.x)),
-        y: Math.max(0, Math.round(clipBox.y)),
-        width: Math.min(vp.width, Math.round(clipBox.width)),
-        height: Math.min(vp.height, Math.round(clipBox.height)),
-      };
-      await page.screenshot({ path: path.join(shotDir, "stripes-closeup-" + tag + ".png"), clip });
-    } catch (err) {
-      check("close-up at zoom " + zoom + " captured", false, String(err));
-    }
   }
   await page.evaluate(() => {
     document.documentElement.style.zoom = "1";
@@ -893,133 +843,6 @@ if (touchA.supported) {
     window.__lineHalfMask.pause(true);
   });
   await page.waitForTimeout(50);
-  check("zoom stills written", fs.existsSync(path.join(shotDir, "stripes-closeup-1.png")) && fs.existsSync(path.join(shotDir, "stripes-closeup-1p25.png")) && fs.existsSync(path.join(shotDir, "stripes-closeup-1p5.png")));
-
-  const frameDir = path.join(os.tmpdir(), "line-half-mask-frames");
-  fs.rmSync(frameDir, { recursive: true, force: true });
-  fs.mkdirSync(frameDir, { recursive: true });
-  await page.evaluate(() => {
-    window.__lineHalfMask.pause(false);
-    window.__lineHalfMask.update();
-  });
-  await page.waitForTimeout(40);
-  const flowClip = {
-    x: Math.max(0, Math.round(clipBox.x)),
-    y: Math.max(0, Math.round(clipBox.y)),
-    width: Math.round(clipBox.width),
-    height: Math.round(clipBox.height),
-  };
-  const frameCount = 30;
-  const frameDelayMs = 67;
-  for (let i = 0; i < frameCount; i++) {
-    await page.screenshot({ path: path.join(frameDir, "frame-" + String(i).padStart(3, "0") + ".png"), clip: flowClip });
-    if (i + 1 < frameCount) await page.waitForTimeout(frameDelayMs);
-  }
-  await page.evaluate(() => window.__lineHalfMask.pause(true));
-  const gifPath = path.join(shotDir, "stripes-flow.gif");
-  const webpPath = path.join(shotDir, "stripes-flow.webp");
-  try {
-    execFileSync("ffmpeg", [
-      "-y", "-framerate", "15", "-i", path.join(frameDir, "frame-%03d.png"),
-      "-loop", "0",
-      "-lavfi", "split[a][b];[a]palettegen=stats_mode=full[p];[b][p]paletteuse=dither=bayer:bayer_scale=3",
-      gifPath,
-    ], { stdio: "pipe" });
-    check("flow GIF written", fs.existsSync(gifPath) && fs.statSync(gifPath).size > 1000, { bytes: fs.existsSync(gifPath) ? fs.statSync(gifPath).size : 0 });
-  } catch (err) {
-    check("flow GIF written", false, (err.stderr && err.stderr.toString()) || String(err));
-  }
-  try {
-    execFileSync("ffmpeg", [
-      "-y", "-framerate", "15", "-i", path.join(frameDir, "frame-%03d.png"),
-      "-loop", "0", "-c:v", "libwebp", "-lossless", "0", "-q:v", "70",
-      "-quality", "70", webpPath,
-    ], { stdio: "pipe" });
-    check("flow WebP written", fs.existsSync(webpPath) && fs.statSync(webpPath).size > 500, { bytes: fs.existsSync(webpPath) ? fs.statSync(webpPath).size : 0 });
-  } catch (err) {
-    check("flow WebP written", false, (err.stderr && err.stderr.toString()) || String(err));
-  }
-  fs.rmSync(frameDir, { recursive: true, force: true });
-}
-
-{
-  await page.evaluate(() => {
-    const api = window.__lineHalfMask;
-    api.applyStripePrefs({ stripeWhite: 2, stripeBlack: 1, stripeSpeed: 0, randomAngle: false }, true);
-    api.setStripeStyle({ stripeAngle: 0, flowSign: 1 });
-    api.pause(true);
-  });
-  await page.waitForTimeout(40);
-  const period21 = await page.evaluate(() => window.__lineHalfMask.STRIPE_PERIOD);
-  check("white 2px and black 1px make a period of 3", period21 === 3, period21);
-  const pattern = await page.evaluate(() => {
-    const canvas = document.getElementById("line-half-mask-root");
-    const masks = window.__lineHalfMask.collect();
-    const m = masks && masks[0];
-    if (!canvas || !m) return { ok: false, reason: "no-mask" };
-    const dpr = window.devicePixelRatio || 1;
-    const shown = canvas.getBoundingClientRect().width;
-    const local = canvas.offsetWidth || innerWidth;
-    const scale = (shown > 0 && local > 0) ? shown / local : 1;
-    const ctx = canvas.getContext("2d");
-    const x = Math.floor((m.left + m.width / 2) / scale * dpr);
-    const y0 = Math.floor((m.top + 1) / scale * dpr);
-    const y1 = Math.floor((m.top + m.height - 1) / scale * dpr);
-    const colors = [];
-    for (let y = y0; y < y1; y++) {
-      const p = ctx.getImageData(x, y, 1, 1).data;
-      const r = p[0], g = p[1], b = p[2], a = p[3];
-      let c = "o";
-      if (a > 20 && r < 40 && g < 40 && b < 40) c = "k";
-      else if (a > 20 && r > 215 && g > 215 && b > 215) c = "w";
-      colors.push(c);
-    }
-    const runs = [];
-    for (const c of colors) {
-      if (!runs.length || runs[runs.length - 1].c !== c) runs.push({ c, n: 1 });
-      else runs[runs.length - 1].n += 1;
-    }
-    const interior = runs.length > 2 ? runs.slice(1, -1) : runs;
-    const blacks = interior.filter((r) => r.c === "k").map((r) => r.n);
-    const whites = interior.filter((r) => r.c === "w").map((r) => r.n);
-    const other = interior.some((r) => r.c === "o");
-    const blackN = blacks.length ? blacks[0] : 0;
-    const whiteN = whites.length ? whites[0] : 0;
-    const ok = !other && blacks.length && whites.length &&
-      blacks.every((n) => n === blackN) && whites.every((n) => n === whiteN) &&
-      whiteN === blackN * 2 && blackN > 0;
-    return { ok, blackN, whiteN, runs: runs.slice(0, 8), n: colors.length };
-  });
-  check("horizontal 2px white / 1px black stripes have a seamless 1+2 period", pattern.ok, pattern);
-  await page.evaluate(() => {
-    const api = window.__lineHalfMask;
-    api.setStripeStyle({ stripeAngle: -Math.PI / 4, flowSign: 1 });
-    api.pause(true);
-  });
-  await page.waitForTimeout(40);
-  await page.screenshot({ path: path.join(shotDir, "desktop-stripes-2-1.png"), fullPage: false });
-
-  await page.evaluate(() => {
-    const api = window.__lineHalfMask;
-    api.applyStripePrefs({ stripeWhite: 8, stripeBlack: 8, stripeSpeed: 30, randomAngle: true }, true);
-    api.setStripeStyle({ stripeAngle: Math.PI / 6, flowSign: 1 });
-    api.pause(true);
-  });
-  await page.waitForTimeout(40);
-  const randState = await page.evaluate(() => window.__lineHalfMask.getState());
-  check(
-    "random-angle mode can use a non-45-degree tilt with flow along the normal",
-    Math.abs(randState.stripeAngle - Math.PI / 6) < 1e-9 && randState.flowSign === 1 && randState.randomAngle === true,
-    randState
-  );
-  await page.screenshot({ path: path.join(shotDir, "desktop-random-angle.png"), fullPage: false });
-
-  await page.evaluate(() => {
-    const api = window.__lineHalfMask;
-    api.applyStripePrefs({ stripeWhite: 8, stripeBlack: 8, stripeSpeed: 30, randomAngle: false }, true);
-    api.setStripeStyle({ stripeAngle: -Math.PI / 4, flowSign: 1 });
-    api.pause(true);
-  });
 }
 
 {
@@ -1186,39 +1009,6 @@ if (touchA.supported) {
   await page.screenshot({ path: path.join(shotDir, "desktop-selection.png"), fullPage: false });
   await page.evaluate(() => window.__lineHalfMask.endSelection());
 
-  const angles = await page.evaluate(() => {
-    const api = window.__lineHalfMask;
-    api.applyStripePrefs({ randomAngle: false }, true);
-    const off = { angle: api.getState().stripeAngle, sign: api.getState().flowSign };
-    api.applyStripePrefs({ randomAngle: true }, true);
-    const a1 = { angle: api.getState().stripeAngle, sign: api.getState().flowSign };
-    api.swap();
-    const a2 = { angle: api.getState().stripeAngle, sign: api.getState().flowSign };
-    const signs = new Set([a1.sign, a2.sign]);
-    for (let i = 0; i < 16 && signs.size < 2; i++) {
-      api.swap();
-      signs.add(api.getState().flowSign);
-    }
-    api.applyStripePrefs({ randomAngle: false }, true);
-    const reset = { angle: api.getState().stripeAngle, sign: api.getState().flowSign };
-    return {
-      off, a1, a2, reset, signs: [...signs],
-      defAngle: -Math.PI / 4, defSign: 1,
-    };
-  });
-  check(
-    "random tilt and normal sign change on swap and reset to 45 degrees when off",
-    Math.abs(angles.off.angle - angles.defAngle) < 1e-9 &&
-      angles.off.sign === angles.defSign &&
-      Math.abs(angles.a1.angle - angles.defAngle) > 1e-6 &&
-      angles.a1.sign * angles.a1.sign === 1 &&
-      (Math.abs(angles.a1.angle - angles.a2.angle) > 1e-12 || angles.a1.sign !== angles.a2.sign) &&
-      Math.abs(angles.reset.angle - angles.defAngle) < 1e-9 &&
-      angles.reset.sign === angles.defSign &&
-      !("randomDir" in (angles.off)),
-    angles
-  );
-  await page.evaluate(() => window.__lineHalfMask.applyStripePrefs({ stripeWhite: 8, stripeBlack: 8, stripeSpeed: 30, randomAngle: false }, true));
 }
 
 await page.evaluate(() => window.__lineHalfMask.toggle());
@@ -1229,6 +1019,203 @@ const off = await page.evaluate(() => ({
 }));
 check("toggle off removes overlay", off.state.on === false && off.root === false && off.state.selectionOn === false, off);
 await page.close();
+
+
+// ----- ポップアップの十字（ページ全体・選択範囲）と、範囲を指定した視覚トレーニング -----
+{
+  const dpage = await openPage(browser, url, { width: 800, height: 700 });
+  const api = (fn, arg) => dpage.evaluate(fn, arg);
+  const st = () => dpage.evaluate(() => window.__lineHalfMask.getState());
+  const apply = async (v) => { await dpage.evaluate((c) => window.__lineHalfMask.applyCoverage(c), v); await dpage.waitForTimeout(60); };
+  const sample = await dpage.evaluate(measureFn);
+
+  // 何も選んでいない: ページ全体
+  await apply("full");
+  let state = await st();
+  check("D-pad ← with no selection turns the whole page on as 全行", state.on === true && state.pageFull === true && state.shown === "full" && state.selectionOn === false, state);
+  check("page-wide オン masks every visible line completely", matchMasks(await readMasks(dpage), fixedMasks(sample.all, "full", sample.viewport)).ok);
+  await apply("top");
+  state = await st();
+  check("D-pad ↑ on the page: alternating, first line's top half masked", state.on && !state.pageFull && state.parity === 1 && state.shown === "top", state);
+  check("page-wide ↑ matches the alternating masks starting with the top half", matchMasks(await readMasks(dpage), expectedMasks(sample.all, 1, sample.viewport)).ok);
+  await dpage.evaluate(() => window.__lineHalfMask.pause(true));
+  await dpage.screenshot({ path: path.join(shotDir, "desktop-black-top.png"), clip: { x: 0, y: 0, width: 800, height: 640 } });
+  await apply("bottom");
+  state = await st();
+  check("D-pad ↓ on the page: alternating, first line's bottom half masked", state.on && !state.pageFull && state.parity === 0 && state.shown === "bottom", state);
+  check("page-wide ↓ matches the alternating masks starting with the bottom half", matchMasks(await readMasks(dpage), expectedMasks(sample.all, 0, sample.viewport)).ok);
+  await dpage.evaluate(() => window.__lineHalfMask.pause(true));
+  await dpage.screenshot({ path: path.join(shotDir, "desktop-black-bottom.png"), clip: { x: 0, y: 0, width: 800, height: 640 } });
+  await apply("off");
+  state = await st();
+  check("D-pad → turns the page off and removes the canvas", state.on === false && state.shown === "off" && (await dpage.evaluate(() => !document.getElementById("line-half-mask-root"))), state);
+
+  // 選択あり: 選択範囲に効く。ページ全体は触らない。
+  await dpage.evaluate(() => {
+    const range = document.createRange();
+    range.selectNodeContents(document.getElementById("p-ja"));
+    const sel = getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+  });
+  await apply("top");
+  state = await st();
+  const ja = (await dpage.evaluate(measureFn)).blocks["p-ja"];
+  check("D-pad ↑ with a selection overlays the selection only", state.selectionOn && state.shown === "top" && state.on === false, state);
+  check("selection ↑ masks the top half of each selected line", matchMasks(await readMasks(dpage), fixedMasks(ja, "top", sample.viewport)).ok);
+  await apply("full");
+  check("D-pad ← changes the running selection overlay to 全行", (await st()).shown === "full" && matchMasks(await readMasks(dpage), fixedMasks(ja, "full", sample.viewport)).ok);
+  await apply("off");
+  state = await st();
+  check("D-pad → ends the selection overlay and leaves the page off", state.selectionOn === false && state.on === false && state.shown === "off", state);
+
+  // 範囲を指定して視覚トレーニング
+  await dpage.evaluate(() => { getSelection().removeAllRanges(); });
+  await dpage.evaluate(() => { window.__mousedowns = 0; document.addEventListener("mousedown", () => { window.__mousedowns += 1; }); });
+  const layerInfo = () => dpage.evaluate(() => {
+    const l = document.getElementById("line-half-mask-capture");
+    if (!l) return null;
+    const r = l.getBoundingClientRect();
+    return { cursor: getComputedStyle(l).cursor, w: r.width, h: r.height, vw: innerWidth, vh: innerHeight, pos: getComputedStyle(l).position };
+  });
+  const rootGone = () => dpage.evaluate(() => !document.getElementById("line-half-mask-root"));
+  const rectState = () => dpage.evaluate(() => {
+    const a = window.__lineHalfMask;
+    const m = a.collect();
+    return { state: a.getState(), masks: m.map((r) => ({ left: r.left, top: r.top, right: r.left + r.width, bottom: r.top + r.height })), fx: !!a.fxInfo() };
+  });
+
+  await dpage.evaluate(() => window.__lineHalfMask.trainRect());
+  const layer = await layerInfo();
+  check("rect mode: a transparent full-viewport capture layer with a crosshair cursor appears", layer && layer.cursor === "crosshair" && layer.pos === "fixed" && layer.w === layer.vw && layer.h === layer.vh, layer);
+  check("rect mode: nothing is drawn before the drag", (await st()).selectionOn === false && (await rootGone()));
+  await dpage.mouse.move(120, 160);
+  await dpage.mouse.down();
+  await dpage.mouse.move(300, 300, { steps: 4 });
+  await dpage.mouse.move(520, 420, { steps: 4 });
+  const band = await dpage.evaluate(() => {
+    const l = document.getElementById("line-half-mask-capture");
+    const b = l && l.firstElementChild;
+    if (!b) return null;
+    const r = b.getBoundingClientRect();
+    return { display: getComputedStyle(b).display, left: r.left, top: r.top, w: r.width, h: r.height };
+  });
+  check("rect mode: a rubber band follows the drag", band && band.display === "block" && Math.abs(band.left - 120) <= 2 && Math.abs(band.top - 160) <= 2 && Math.abs(band.w - 400) <= 3 && Math.abs(band.h - 260) <= 3, band);
+  await dpage.screenshot({ path: path.join(shotDir, "desktop-train-drag.png"), clip: { x: 0, y: 0, width: 800, height: 640 } });
+  await dpage.mouse.up();
+  await dpage.waitForTimeout(80);
+  check("rect mode: the capture layer is removed after the drag", (await layerInfo()) === null && (await st()).dragging === false);
+  let rs = await rectState();
+  const m0 = rs.masks[0];
+  check("rect mode: one overlay at the dragged rectangle, always 視覚増強 (fill setting is 黒塗り)",
+    rs.state.selectionOn && rs.state.rect && rs.state.fill === "black" && rs.fx && rs.masks.length === 1 &&
+      Math.abs(m0.left - 120) <= 1 && Math.abs(m0.top - 160) <= 1 && Math.abs(m0.right - 520) <= 1 && Math.abs(m0.bottom - 420) <= 1, rs);
+  const pix = await dpage.evaluate(() => {
+    const c = document.getElementById("line-half-mask-root");
+    const dpr = window.devicePixelRatio || 1;
+    const ctx = c.getContext("2d");
+    const count = (x, y, w, h) => {
+      const d = ctx.getImageData(Math.round(x * dpr), Math.round(y * dpr), Math.round(w * dpr), Math.round(h * dpr)).data;
+      let black = 0, white = 0, clear = 0;
+      for (let i = 0; i < d.length; i += 4) {
+        if (d[i + 3] < 20) clear += 1;
+        else if (d[i] < 40 && d[i + 1] < 40 && d[i + 2] < 40) black += 1;
+        else if (d[i] > 215 && d[i + 1] > 215 && d[i + 2] > 215) white += 1;
+      }
+      return { black, white, clear, total: d.length / 4 };
+    };
+    return { inside: count(124, 164, 392, 252), outsideAbove: count(0, 0, 800, 156), outsideRight: count(526, 0, 270, 640), outsideLeft: count(0, 0, 116, 640) };
+  });
+  check("rect mode: inside the rectangle has crisp black and white stripes", pix.inside.black > pix.inside.total * 0.3 && pix.inside.white > pix.inside.total * 0.3 && pix.inside.clear === 0, pix.inside);
+  check("rect mode: nothing is drawn outside the rectangle", pix.outsideAbove.clear === pix.outsideAbove.total && pix.outsideRight.clear === pix.outsideRight.total && pix.outsideLeft.clear === pix.outsideLeft.total, pix);
+  const through = await dpage.evaluate(() => {
+    const e = document.elementFromPoint(300, 300);
+    return { id: e && e.id, tag: e && e.tagName, pe: getComputedStyle(document.getElementById("line-half-mask-root")).pointerEvents };
+  });
+  check("rect mode: the stripes do not block the page (pointer-events none)", through.pe === "none" && through.id !== "line-half-mask-root", through);
+  await dpage.screenshot({ path: path.join(shotDir, "desktop-train-rect.png"), clip: { x: 0, y: 0, width: 800, height: 640 } });
+  // ページに付いてスクロールする
+  await dpage.evaluate(() => { window.scrollTo(0, 100); });
+  await dpage.waitForTimeout(120);
+  rs = await rectState();
+  check("rect mode: the rectangle is anchored to the page and scrolls with it", rs.masks.length === 1 && Math.abs(rs.masks[0].top - 60) <= 1 && Math.abs(rs.masks[0].bottom - 320) <= 1, rs.masks);
+  await dpage.evaluate(() => { window.scrollTo(0, 0); });
+  await dpage.waitForTimeout(100);
+  // 中のクリックでは終わらない。外のクリックで終わり、そのクリックはページにも届く。
+  const downsBefore = await dpage.evaluate(() => window.__mousedowns);
+  await dpage.mouse.click(300, 300);
+  await dpage.waitForTimeout(60);
+  check("rect mode: a click inside keeps the rectangle", (await st()).selectionOn === true);
+  await dpage.mouse.click(700, 600);
+  await dpage.waitForTimeout(80);
+  const afterOut = await st();
+  const downsAfter = await dpage.evaluate(() => window.__mousedowns);
+  check("rect mode: a click elsewhere ends it, removes the canvas, and still reaches the page", afterOut.selectionOn === false && (await rootGone()) && downsAfter === downsBefore + 2, { afterOut, downsBefore, downsAfter });
+
+  // 小さなドラッグ・Esc
+  await dpage.evaluate(() => window.__lineHalfMask.trainRect());
+  await dpage.mouse.move(200, 200);
+  await dpage.mouse.down();
+  await dpage.mouse.move(203, 202);
+  await dpage.mouse.up();
+  await dpage.waitForTimeout(60);
+  check("rect mode: a tiny drag cancels (no overlay, layer removed)", (await st()).selectionOn === false && (await layerInfo()) === null && (await rootGone()));
+  await dpage.evaluate(() => window.__lineHalfMask.trainRect());
+  await dpage.keyboard.press("Escape");
+  await dpage.waitForTimeout(40);
+  check("rect mode: Esc before dragging cancels", (await st()).dragging === false && (await layerInfo()) === null && (await rootGone()));
+  await dpage.evaluate(() => window.__lineHalfMask.trainRect());
+  await dpage.mouse.move(150, 150);
+  await dpage.mouse.down();
+  await dpage.mouse.move(400, 300, { steps: 3 });
+  await dpage.keyboard.press("Escape");
+  await dpage.mouse.up();
+  await dpage.waitForTimeout(60);
+  check("rect mode: Esc during the drag cancels", (await st()).selectionOn === false && (await layerInfo()) === null && (await rootGone()));
+  await dpage.evaluate(() => window.__lineHalfMask.startRect({ left: 100, top: 100, width: 200, height: 120 }));
+  await dpage.waitForTimeout(60);
+  check("rect overlay is up before Esc", (await st()).rect === true);
+  await apply("top");
+  rs = await rectState();
+  check("D-pad ↑ on a rectangle masks its top half (50 percent)", rs.state.rect && rs.state.shown === "top" && rs.masks.length === 1 && Math.abs(rs.masks[0].top - 100) <= 1 && Math.abs((rs.masks[0].bottom - rs.masks[0].top) - 60) <= 1, rs.masks);
+  await apply("full");
+  await dpage.keyboard.press("Escape");
+  await dpage.waitForTimeout(60);
+  check("rect mode: Esc ends the stripes", (await st()).selectionOn === false && (await rootGone()));
+
+  // 範囲の指定と選択範囲は同時に出ない。ページ全体のマスクは終われば戻る。
+  await dpage.evaluate(() => window.__lineHalfMask.start());
+  await dpage.waitForTimeout(60);
+  await dpage.evaluate(() => window.__lineHalfMask.startRect({ left: 100, top: 100, width: 300, height: 200 }));
+  await dpage.waitForTimeout(60);
+  rs = await rectState();
+  check("a rectangle hides the page-wide mask while it is shown", rs.state.rect && rs.state.on && rs.masks.length === 1, rs);
+  await dpage.evaluate(() => {
+    const range = document.createRange();
+    range.selectNodeContents(document.getElementById("p-ja"));
+    const sel = getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    window.__lineHalfMask.overlaySelection();
+  });
+  await dpage.waitForTimeout(60);
+  state = await st();
+  check("starting a selection overlay replaces the rectangle", state.selectionOn && state.rect === false, state);
+  await dpage.evaluate(() => { getSelection().removeAllRanges(); window.__lineHalfMask.trainRect(); });
+  await dpage.mouse.move(100, 100);
+  await dpage.mouse.down();
+  await dpage.mouse.move(380, 260, { steps: 3 });
+  await dpage.mouse.up();
+  await dpage.waitForTimeout(80);
+  state = await st();
+  check("dragging a rectangle replaces the selection overlay", state.selectionOn && state.rect === true, state);
+  await dpage.mouse.click(700, 650);
+  await dpage.waitForTimeout(80);
+  rs = await rectState();
+  const back = await dpage.evaluate(measureFn);
+  check("ending the rectangle brings the page-wide mask back", rs.state.on && !rs.state.selectionOn && matchMasks(await readMasks(dpage), expectedMasks(back.all, rs.state.parity, back.viewport)).ok, { on: rs.state.on, n: rs.masks.length });
+  await dpage.close();
+}
 
 // ----- mobile-width screenshots and a geometry check -----
 const mobile = { width: 360, height: 1800 };
@@ -1270,31 +1257,26 @@ await mpage.close();
       window.__commandStore = ${JSON.stringify(store)};
       window.__commandUpdates = [];
       window.__commandResets = [];
-      window.__storage = { ratio: 50, stripeWhite: 8, stripeBlack: 8, stripeSpeed: 30, randomAngle: false };
+      window.__storage = { ratio: 50 };
       window.__storageSets = [];
       window.__messages = [];
-      window.__sel = false;
+      window.__page = { on: false, selectionOn: false, rect: false, shown: "off" };
       const api = {
         tabs: {
           query: async () => [{ id: 1 }],
           sendMessage: async (_id, msg) => {
             window.__messages.push(msg);
             if (msg && msg.type === "setRatio") window.__storage.ratio = msg.ratio;
-            if (msg && msg.type === "setStripe") Object.assign(window.__storage, msg);
-            if (msg && msg.type === "overlaySelection") {
-              window.__sel = !!window.__hasSelection;
-              if (msg.coverage) window.__storage.coverage = msg.coverage;
-              return { ok: !!window.__hasSelection, selectionOn: window.__sel, coverage: window.__storage.coverage || "full" };
+            const pg = window.__page;
+            if (msg && msg.type === "applyCoverage") {
+              if (msg.coverage === "off") { pg.on = false; pg.selectionOn = false; pg.shown = "off"; }
+              else {
+                if (!pg.selectionOn && window.__hasSelection) pg.selectionOn = true;
+                if (!pg.selectionOn) pg.on = true;
+                pg.shown = msg.coverage;
+              }
             }
-            if (msg && msg.type === "setCoverage") {
-              window.__storage.coverage = msg.coverage;
-              return { on: false, parity: 0, selectionOn: !!window.__sel, coverage: msg.coverage };
-            }
-            if (msg && msg.type === "endSelection") {
-              window.__sel = false;
-              return { on: false, parity: 0, selectionOn: false };
-            }
-            return { on: false, parity: 0, selectionOn: !!window.__sel, coverage: window.__storage.coverage || "full", ratio: window.__storage.ratio, stripeWhite: window.__storage.stripeWhite, stripeBlack: window.__storage.stripeBlack, stripeSpeed: window.__storage.stripeSpeed, randomAngle: window.__storage.randomAngle };
+            return { on: pg.on, parity: 0, selectionOn: pg.selectionOn, rect: pg.rect, shown: pg.shown, ratio: window.__storage.ratio };
           },
         },
         storage: {
@@ -1371,66 +1353,12 @@ await mpage.close();
   await popupPage.fill("#ratio", "60");
   await popupPage.evaluate(() => document.getElementById("ratio").blur());
   await popupPage.waitForTimeout(80);
-  const stripeStart = await popupPage.evaluate(() => ({
-    white: document.getElementById("stripe-white").value,
-    black: document.getElementById("stripe-black").value,
-    speed: document.getElementById("stripe-speed").value,
-    angle: document.getElementById("random-angle").checked,
-    hasDir: !!document.getElementById("random-dir"),
-    label: document.querySelector("#random-angle + span") && document.querySelector("#random-angle + span").textContent,
+  const removedUi = await popupPage.evaluate(() => ({
+    ids: ["toggle", "swap", "overlay-selection", "black-panel", "stripe-white", "stripe-black", "stripe-speed", "random-angle"].filter((id) => document.getElementById(id)),
+    buttons: [...document.querySelectorAll("button")].map((b) => b.id || b.dataset.coverage),
   }));
-  check("desktop popup shows white 8, black 8, speed 30, and no separate direction option", stripeStart.white === "8" && stripeStart.black === "8" && stripeStart.speed === "30" && stripeStart.angle === false && stripeStart.hasDir === false, stripeStart);
-  check("desktop popup label mentions tilt and left/right flow", !!(stripeStart.label && stripeStart.label.includes("傾き") && stripeStart.label.includes("左右")), stripeStart.label);
-  await popupPage.fill("#stripe-white", "12");
-  await popupPage.fill("#stripe-black", "4");
-  await popupPage.fill("#stripe-speed", "45");
-  await popupPage.evaluate(() => {
-    document.getElementById("stripe-white").blur();
-    document.getElementById("stripe-black").blur();
-    document.getElementById("stripe-speed").blur();
-    document.getElementById("random-angle").click();
-  });
-  await popupPage.waitForTimeout(80);
-  const stripeSaved = await popupPage.evaluate(() => ({
-    white: document.getElementById("stripe-white").value,
-    black: document.getElementById("stripe-black").value,
-    speed: document.getElementById("stripe-speed").value,
-    angle: document.getElementById("random-angle").checked,
-    storage: window.__storage,
-    messages: window.__messages.filter((m) => m && m.type === "setStripe"),
-  }));
-  check(
-    "popup saves white width, black width, speed, and random tilt",
-    stripeSaved.white === "12" && stripeSaved.black === "4" && stripeSaved.speed === "45" && stripeSaved.angle === true && stripeSaved.storage.stripeWhite === 12 && stripeSaved.storage.stripeBlack === 4 && stripeSaved.storage.stripeSpeed === 45 && stripeSaved.storage.randomAngle === true && !("randomDir" in stripeSaved.storage) && stripeSaved.messages.some((m) => m.stripeWhite === 12 && m.stripeBlack === 4 && m.randomAngle === true),
-    stripeSaved
-  );
-  await popupPage.fill("#stripe-white", "0");
-  await popupPage.fill("#stripe-black", "20");
-  await popupPage.fill("#stripe-speed", "99");
-  await popupPage.evaluate(() => {
-    document.getElementById("stripe-white").blur();
-    document.getElementById("stripe-black").blur();
-    document.getElementById("stripe-speed").blur();
-  });
-  await popupPage.waitForTimeout(80);
-  const stripeClamped = await popupPage.evaluate(() => ({
-    white: document.getElementById("stripe-white").value,
-    black: document.getElementById("stripe-black").value,
-    speed: document.getElementById("stripe-speed").value,
-    storage: window.__storage,
-  }));
-  check("popup clamps white 0 to 1, black 20 to 16, and speed 99 to 60", stripeClamped.white === "1" && stripeClamped.black === "16" && stripeClamped.speed === "60" && stripeClamped.storage.stripeWhite === 1 && stripeClamped.storage.stripeBlack === 16 && stripeClamped.storage.stripeSpeed === 60, stripeClamped);
-  await popupPage.fill("#stripe-white", "2");
-  await popupPage.fill("#stripe-black", "1");
-  await popupPage.fill("#stripe-speed", "30");
-  await popupPage.evaluate(() => {
-    document.getElementById("stripe-white").blur();
-    document.getElementById("stripe-black").blur();
-    document.getElementById("stripe-speed").blur();
-    const box = document.getElementById("random-angle");
-    if (!box.checked) box.click();
-  });
-  await popupPage.waitForTimeout(80);
+  check("popup has no オンにする / 塗りを入れ替え / 選択範囲に重ねる buttons and no stripe settings", removedUi.ids.length === 0, removedUi);
+  check("popup buttons are only the D-pad and the shortcut reset", removedUi.buttons.join() === "top,full,off,bottom,shortcut-reset", removedUi);
   await popupPage.screenshot({ path: path.join(shotDir, "popup-shortcuts.png"), fullPage: true });
 
   await popupPage.click("#shortcut-toggle");
@@ -1497,78 +1425,58 @@ await mpage.close();
     hidden: document.getElementById("shortcuts").hidden,
     hasClass: document.body.classList.contains("has-shortcuts"),
     ratio: document.getElementById("ratio") ? document.getElementById("ratio").value : null,
-    white: document.getElementById("stripe-white") ? document.getElementById("stripe-white").value : null,
-    black: document.getElementById("stripe-black") ? document.getElementById("stripe-black").value : null,
-    speed: document.getElementById("stripe-speed") ? document.getElementById("stripe-speed").value : null,
-    angle: document.getElementById("random-angle") ? document.getElementById("random-angle").checked : null,
-    hasDir: !!document.getElementById("random-dir"),
   }));
   check("Android popup hides shortcut settings", androidUi.hidden === true && androidUi.hasClass === false, androidUi);
   check("Android popup shows the ratio field", androidUi.ratio === "50", androidUi);
-  check("Android popup shows white/black widths, speed, and random tilt", androidUi.white === "8" && androidUi.black === "8" && androidUi.speed === "30" && androidUi.angle === false && androidUi.hasDir === false, androidUi);
   const idlePad = await androidPage.evaluate(() => [...document.querySelectorAll(".pad [data-coverage]")].map((e) => e.dataset.dir + ":" + e.dataset.coverage + ":" + e.textContent + ":" + e.classList.contains("on") + ":" + e.tabIndex));
   check("Android popup: idle D-pad is 上半分/オン/オフ/下半分 with オフ highlighted",
     idlePad.join() === "up:top:上半分:false:-1,left:full:オン:false:-1,right:off:オフ:true:-1,down:bottom:下半分:false:-1", idlePad);
+  const padState = () => androidPage.evaluate(() => ({
+    on: [...document.querySelectorAll(".pad button.on")].map((b) => b.dataset.coverage).join(),
+    status: document.getElementById("status").textContent,
+    msgs: window.__messages.filter((m) => m && m.type === "applyCoverage").map((m) => m.coverage),
+    stored: window.__storage.coverage,
+    fill: window.__storage.fill,
+    enhHidden: document.getElementById("enhance-panel").hidden,
+  }));
+  // 何も選んでいない: ページ全体
   await androidPage.evaluate(() => { window.__hasSelection = false; });
-  await androidPage.click("#overlay-selection");
-  await androidPage.waitForTimeout(60);
-  const noSel = await androidPage.evaluate(() => ({ text: document.getElementById("status").textContent, msgs: window.__messages.filter((m) => m && m.type === "overlaySelection").length }));
-  check("Android popup: overlay button asks for a selection when none exists", noSel.msgs === 1 && noSel.text.includes("選択"), noSel);
-  await androidPage.evaluate(() => { window.__hasSelection = true; });
-  await androidPage.click("#overlay-selection");
-  await androidPage.waitForTimeout(60);
-  const withSel = await androidPage.evaluate(() => ({
-    text: document.getElementById("status").textContent,
-    msgs: window.__messages.filter((m) => m && m.type === "overlaySelection"),
-    btn: document.getElementById("overlay-selection").textContent,
-  }));
-  check("Android popup: overlay button sends overlaySelection without a picker and confirms", withSel.msgs.length === 2 && !withSel.msgs[1].picker && withSel.text.includes("重ねました") && withSel.btn === "重ねるのを止める", withSel);
-  const choices = await androidPage.evaluate(() => ({
-    pad: [...document.querySelectorAll(".pad [data-coverage]")].map((e) => e.dataset.dir + ":" + e.dataset.coverage + ":" + e.textContent + ":" + e.classList.contains("on") + ":" + e.tabIndex),
-    fill: [...document.querySelectorAll('input[name="fill"]')].map((e) => e.value + ":" + e.checked + ":" + e.parentElement.textContent.trim()),
-    blackHidden: document.getElementById("black-panel").hidden,
-    enhHidden: document.getElementById("enhance-panel").hidden,
-  }));
-  check(
-    "Android popup: after starting, オン is highlighted; fill choices are 黒塗り/視覚増強 (default 黒塗り)",
-    choices.pad.join() === "up:top:上半分:false:-1,left:full:オン:true:-1,right:off:オフ:false:-1,down:bottom:下半分:false:-1" &&
-      choices.fill.join() === "black:true:黒塗り,enhance:false:視覚増強" && choices.blackHidden === false && choices.enhHidden === true,
-    choices
-  );
   await androidPage.click('.pad [data-coverage="top"]');
-  await androidPage.click('input[name="fill"][value="enhance"]');
   await androidPage.waitForTimeout(60);
-  const saved = await androidPage.evaluate(() => ({
-    storage: { coverage: window.__storage.coverage, fill: window.__storage.fill },
-    msgs: window.__messages.filter((m) => m && (m.type === "overlaySelection" || m.type === "setCoverage")),
-    on: [...document.querySelectorAll(".pad button.on")].map((b) => b.dataset.coverage),
-    blackHidden: document.getElementById("black-panel").hidden,
-    enhHidden: document.getElementById("enhance-panel").hidden,
-  }));
-  check("Android popup: tapping 上半分 changes the running overlay, saves coverage, and swaps the settings panel",
-    saved.storage.coverage === "top" && saved.storage.fill === "enhance" && saved.on.join() === "top" &&
-      saved.msgs.some((m) => m.type === "setCoverage" && m.coverage === "top") && saved.blackHidden === true && saved.enhHidden === false, saved);
+  let st = await padState();
+  check("Android popup: ↑ with no selection sends applyCoverage top and targets the whole page",
+    st.msgs.join() === "top" && st.on === "top" && st.status === "いま: ページ全体（上半分）" && st.stored === "top", st);
+  await androidPage.click('.pad [data-coverage="bottom"]');
+  await androidPage.waitForTimeout(60);
+  st = await padState();
+  check("Android popup: ↓ shows 下半分 for the whole page", st.on === "bottom" && st.status === "いま: ページ全体（下半分）", st);
+  await androidPage.click('.pad [data-coverage="full"]');
+  await androidPage.waitForTimeout(60);
+  st = await padState();
+  check("Android popup: ← shows オン for the whole page", st.on === "full" && st.status === "いま: ページ全体（オン）", st);
   await androidPage.click('.pad [data-coverage="off"]');
   await androidPage.waitForTimeout(60);
-  const ended = await androidPage.evaluate(() => ({
-    msgs: window.__messages.filter((m) => m && m.type === "endSelection").length,
-    on: [...document.querySelectorAll(".pad button.on")].map((b) => b.dataset.coverage),
-    stored: window.__storage.coverage,
-    btn: document.getElementById("overlay-selection").textContent,
-  }));
-  check("Android popup: tapping オフ ends the overlay, highlights オフ, and keeps the last stored coverage",
-    ended.msgs >= 1 && ended.on.join() === "off" && ended.stored === "top" && ended.btn === "選択範囲に重ねる", ended);
+  st = await padState();
+  check("Android popup: → turns everything off and keeps the last stored coverage",
+    st.on === "off" && st.status === "いま: オフ" && st.stored === "full" && st.msgs.slice(-1)[0] === "off", st);
+  // 選択あり: 選択範囲
+  await androidPage.evaluate(() => { window.__hasSelection = true; });
+  await androidPage.click('.pad [data-coverage="top"]');
+  await androidPage.waitForTimeout(60);
+  st = await padState();
+  check("Android popup: with a selection the same ↑ targets the selection", st.on === "top" && st.status === "いま: 選択範囲（上半分）", st);
+  await androidPage.click('input[name="fill"][value="enhance"]');
+  await androidPage.waitForTimeout(60);
+  st = await padState();
+  check("Android popup: choosing 視覚増強 saves the fill and shows its settings", st.fill === "enhance" && st.enhHidden === false, st);
+  await androidPage.click('.pad [data-coverage="off"]');
+  await androidPage.waitForTimeout(60);
 
   // 矢印キーは開いたときから同じ操作。数値欄にフォーカスがあるときは渡す。
   await androidPage.keyboard.press("ArrowLeft");
   await androidPage.waitForTimeout(60);
-  const byKey = await androidPage.evaluate(() => ({
-    msgs: window.__messages.filter((m) => m && m.type === "overlaySelection" && m.coverage === "full"),
-    on: [...document.querySelectorAll(".pad button.on")].map((b) => b.dataset.coverage),
-    stored: window.__storage.coverage,
-  }));
-  check("Android popup: ← starts the overlay as オン and saves coverage full",
-    byKey.msgs.length >= 1 && byKey.on.join() === "full" && byKey.stored === "full", byKey);
+  st = await padState();
+  check("Android popup: ← key applies オン and saves coverage full", st.msgs.slice(-1)[0] === "full" && st.on === "full" && st.stored === "full", st);
   await androidPage.waitForTimeout(80);
   const beforeCount = await androidPage.evaluate(() => window.__messages.length);
   await androidPage.focus("#ratio");
@@ -1690,7 +1598,7 @@ await mpage.close();
     }));
     menuPath.prep = prep;
     // メニューと同じ経路（背景の debugMenuClick）を、拡張のページから呼んでページへ戻る。
-    async function clickViaBackground(fill) {
+    async function clickViaBackground(fill, action) {
       await m.send("Marionette:SetContext", { value: "chrome" });
       const opened = m.val(await m.send("WebDriver:ExecuteScript", {
         script: `const policy = WebExtensionPolicy.getByID("line.half.mask@kofu.com");
@@ -1720,17 +1628,17 @@ await mpage.close();
       }
       const sent = m.val(await m.send("WebDriver:ExecuteAsyncScript", {
         script: `const cb = arguments[arguments.length - 1];
-          const tabId = arguments[0], fill = arguments[1];
+          const tabId = arguments[0], fill = arguments[1], action = arguments[2];
           (async () => {
             const hasBrowser = typeof browser !== "undefined" && !!(browser.runtime && browser.runtime.sendMessage);
             let res = null, err = null;
             if (hasBrowser) {
-              try { res = await browser.runtime.sendMessage({ type: "debugMenuClick", tabId, frameId: 0, fill }); }
+              try { res = await browser.runtime.sendMessage({ type: "debugMenuClick", tabId, frameId: 0, fill, action }); }
               catch (e) { err = String(e && e.message || e); }
             }
             cb({ hasBrowser, href: location.href, res, err });
           })().catch((e) => cb({ err: String(e && e.message || e) }));`,
-        args: [opened && opened.tabId, fill],
+        args: [opened && opened.tabId, fill, action || null],
       }));
       await m.send("Marionette:SetContext", { value: "chrome" });
       await m.send("WebDriver:ExecuteScript", {
@@ -1839,6 +1747,53 @@ await mpage.close();
         menuPath.enhanceScreenshot = true;
       }
     }
+    // 何も選んでいないときのメニュー項目: 捕捉層が出て、ドラッグで視覚増強の長方形になる。
+    await m.send("WebDriver:ExecuteScript", {
+      script: `document.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0, clientX: 5, clientY: 5 }));
+        getSelection().removeAllRanges();
+        return true;`,
+      args: [],
+    });
+    const third = await clickViaBackground(null, "train");
+    menuPath.trainRes = third.sent && third.sent.res;
+    menuPath.trainLayer = m.val(await m.send("WebDriver:ExecuteScript", {
+      script: `const l = document.getElementById("line-half-mask-capture");
+        return { layer: !!l, cursor: l && getComputedStyle(l).cursor, root: !!document.getElementById("line-half-mask-root") };`,
+      args: [],
+    }));
+    await m.send("WebDriver:ExecuteScript", {
+      script: `const l = document.getElementById("line-half-mask-capture");
+        const ev = (t, x, y) => new MouseEvent(t, { bubbles: true, cancelable: true, button: 0, clientX: x, clientY: y });
+        l.dispatchEvent(ev("mousedown", 120, 160));
+        window.dispatchEvent(ev("mousemove", 300, 300));
+        window.dispatchEvent(ev("mousemove", 520, 420));
+        window.dispatchEvent(ev("mouseup", 520, 420));
+        return true;`,
+      args: [],
+    });
+    await sleep(150);
+    menuPath.trainAfter = m.val(await m.send("WebDriver:ExecuteScript", {
+      script: `const c = document.getElementById("line-half-mask-root");
+        const out = { layer: !!document.getElementById("line-half-mask-capture"), hasCanvas: !!c };
+        if (!c) return out;
+        const d = c.getContext("2d").getImageData(0, 0, c.width, c.height).data;
+        let opaque = 0, odd = 0;
+        for (let i = 0; i < d.length; i += 4) {
+          if (d[i + 3] === 0) continue;
+          opaque++;
+          const v = d[i] === 0 && d[i + 1] === 0 && d[i + 2] === 0 || d[i] === 255 && d[i + 1] === 255 && d[i + 2] === 255;
+          if (!v) odd++;
+        }
+        return Object.assign(out, { opaque, odd, pe: getComputedStyle(c).pointerEvents });`,
+      args: [],
+    }));
+    {
+      const shot = m.val(await m.send("WebDriver:TakeScreenshot", { full: false, hash: false }));
+      if (typeof shot === "string" && shot.length > 100) {
+        fs.writeFileSync(path.join(shotDir, "desktop-train-menu.png"), Buffer.from(shot, "base64"));
+        menuPath.trainScreenshot = true;
+      }
+    }
     try { await m.send("WebDriver:DeleteSession", {}); } catch (_) {}
     try { sock.end(); } catch (_) {}
   } catch (err) {
@@ -1876,6 +1831,14 @@ await mpage.close();
       menuPath.enhanceAfter.opaque > 1000 && menuPath.enhanceAfter.odd === 0 &&
       menuPath.enhanceAfter.selectionRemaining === false && menuPath.enhanceScreenshot),
     { res: menuPath.enhanceRes, after: menuPath.enhanceAfter, shot: menuPath.enhanceScreenshot, error: menuPath.error }
+  );
+  check(
+    "real add-on menu path: the 範囲を指定して視覚トレーニング item shows a crosshair capture layer, and a drag leaves crisp stripes with the layer removed",
+    !!(menuPath.trainRes && menuPath.trainRes.ok === true &&
+      menuPath.trainLayer && menuPath.trainLayer.layer && menuPath.trainLayer.cursor === "crosshair" && menuPath.trainLayer.root === false &&
+      menuPath.trainAfter && menuPath.trainAfter.layer === false && menuPath.trainAfter.hasCanvas && menuPath.trainAfter.pe === "none" &&
+      menuPath.trainAfter.opaque > 1000 && menuPath.trainAfter.odd === 0 && menuPath.trainScreenshot),
+    { res: menuPath.trainRes, layer: menuPath.trainLayer, after: menuPath.trainAfter, error: menuPath.error }
   );
 }
 

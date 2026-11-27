@@ -80,7 +80,7 @@ for (const [name, storage] of [
   await pop.addInitScript({ content: `
     window.__storage = ${JSON.stringify(storage)};
     const api = {
-      tabs: { query: async () => [{ id: 1 }], sendMessage: async () => ({ on: false, parity: 0, selectionOn: false }) },
+      tabs: { query: async () => [{ id: 1 }], sendMessage: async () => ({ on: false, parity: 0, selectionOn: false, shown: "off" }) },
       storage: { local: {
         get: async (k) => (typeof k === "string" ? { [k]: window.__storage[k] } : Object.assign({}, window.__storage)),
         set: async (o) => { Object.assign(window.__storage, o); },

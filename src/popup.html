@@ -40,11 +40,6 @@
     button:active {
       background: #eee;
     }
-    #toggle.on, #overlay-selection.on {
-      background: #111;
-      color: #fff;
-      border-color: #111;
-    }
     .note, .err {
       font-size: 12px;
       color: #555;
@@ -53,7 +48,7 @@
     .err {
       color: #a40000;
     }
-    .shortcut, .ratio, .stripe {
+    .shortcut, .ratio {
       display: block;
       margin: 0 0 8px;
     }
@@ -68,12 +63,12 @@
       width: auto;
       margin: 0;
     }
-    .shortcut span, .ratio span, .stripe span {
+    .shortcut span, .ratio span {
       display: block;
       font-size: 12px;
       margin: 0 0 3px;
     }
-    .shortcut input, .ratio input, .stripe input[type="number"] {
+    .shortcut input, .ratio input {
       box-sizing: border-box;
       width: 100%;
       padding: 8px 8px;
@@ -83,7 +78,7 @@
       background: #fff;
       color: #111;
     }
-    .shortcut input:focus, .ratio input:focus, .stripe input:focus {
+    .shortcut input:focus, .ratio input:focus {
       outline: 2px solid #222;
       outline-offset: 1px;
     }
@@ -148,6 +143,12 @@
       color: #fff;
       border-color: #111;
     }
+    #status {
+      margin: 0 0 8px;
+    }
+    .note + .radios {
+      margin-top: 8px;
+    }
     .panel {
       margin: 0 0 0 0;
     }
@@ -162,20 +163,17 @@
 </head>
 <body>
   <h1>行の半分マスク</h1>
-  <button id="toggle" type="button">オンにする</button>
-  <button id="swap" type="button">塗りを入れ替え</button>
-  <button id="overlay-selection" type="button">選択範囲に重ねる</button>
   <p id="status" class="note"></p>
-  <p class="note">文字を選んで、右クリックの「選択範囲に行マスク」か上のボタンで始めます。十字のボタンか矢印キーで範囲を選びます。Esc か、範囲の外をクリックかタップで終わります。</p>
   <div class="pad-wrap">
-    <span>重ねる範囲</span>
-    <div class="pad" role="radiogroup" aria-label="重ねる範囲">
+    <span>操作（矢印キーでも）</span>
+    <div class="pad" role="radiogroup" aria-label="操作">
       <button type="button" tabindex="-1" role="radio" data-coverage="top" data-dir="up">上半分</button>
       <button type="button" tabindex="-1" role="radio" data-coverage="full" data-dir="left">オン</button>
       <button type="button" tabindex="-1" role="radio" data-coverage="off" data-dir="right">オフ</button>
       <button type="button" tabindex="-1" role="radio" data-coverage="bottom" data-dir="down">下半分</button>
     </div>
   </div>
+  <p class="note">文字を選んでいれば選んだ範囲に、選んでいなければページ全体に効きます。ページ全体の上と下は、1 行ごとに交互に隠します。</p>
   <div class="radios">
     <span>塗り</span>
     <label><input type="radio" name="fill" value="black">黒塗り</label>
@@ -186,28 +184,6 @@
     <input id="ratio" type="number" min="50" max="90" step="1" value="50">
   </label>
   <p class="note">50 から 90 までの整数です。</p>
-  <div id="black-panel" class="panel">
-  <h2>黒塗りの設定</h2>
-  <label class="stripe">
-    <span>白の幅（ピクセル）</span>
-    <input id="stripe-white" type="number" min="1" max="16" step="1" value="8">
-  </label>
-  <label class="stripe">
-    <span>黒の幅（ピクセル）</span>
-    <input id="stripe-black" type="number" min="1" max="16" step="1" value="8">
-  </label>
-  <p class="note">それぞれ 1 から 16 までの整数です。</p>
-  <label class="stripe">
-    <span>速さ（ピクセル毎秒）</span>
-    <input id="stripe-speed" type="number" min="0" max="60" step="1" value="30">
-  </label>
-  <p class="note">0 から 60 までの整数です。0 で止まります。</p>
-  <label class="check">
-    <input id="random-angle" type="checkbox">
-    <span>線の傾きと流れの左右をランダム</span>
-  </label>
-  <p class="note">オフのときは 45 度で、縞を横切る向きに進みます。オンのときは傾きと、法線の左右がランダムになります。</p>
-  </div>
   <div id="enhance-panel" class="panel">
   <h2>視覚増強の設定</h2>
   <label class="check">

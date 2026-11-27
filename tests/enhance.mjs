@@ -534,9 +534,12 @@ const setCfg = (page, cfg) => page.evaluate((cfg) => window.__lineHalfMask.setEn
         query: async () => [{ id: 1 }],
         sendMessage: async (_id, msg) => {
           window.__messages.push(msg.type);
-          if (msg.type === "overlaySelection") { window.__sel = !!window.__hasSelection; return { ok: !!window.__hasSelection, selectionOn: window.__sel }; }
-          if (msg.type === "endSelection") { window.__sel = false; return { selectionOn: false }; }
-          return { on: false, parity: 0, selectionOn: window.__sel };
+          if (msg.type === "applyCoverage") {
+            if (msg.coverage === "off") window.__sel = false;
+            else if (window.__hasSelection) window.__sel = true;
+            return { on: !window.__sel && msg.coverage !== "off", parity: 0, selectionOn: window.__sel, shown: msg.coverage };
+          }
+          return { on: false, parity: 0, selectionOn: window.__sel, shown: "off" };
         },
       },
       storage: { local: {
@@ -555,7 +558,6 @@ const setCfg = (page, cfg) => page.evaluate((cfg) => window.__lineHalfMask.setEn
     const ui = await page.evaluate(() => {
       const txt = (id) => document.getElementById(id).textContent;
       return {
-        btn: document.getElementById("overlay-selection").textContent,
         speed: txt("enh-speed-v"), width: txt("enh-width-v"), rot: txt("enh-rot-v"), hue: txt("enh-hue-v"), dist: txt("enh-dist-v"), hint: txt("enh-hint"),
         autoPanelHidden: document.getElementById("enh-auto-panel").hidden,
         manualHidden: document.getElementById("enh-manual-panel").hidden,
@@ -567,7 +569,7 @@ const setCfg = (page, cfg) => page.evaluate((cfg) => window.__lineHalfMask.setEn
         text: document.body.innerText,
       };
     });
-    check(`popup (${os}): defaults shown like the app`, ui.btn === "選択範囲に重ねる" && ui.speed === "速さ 3 px/秒" && ui.width === "縞の幅 1 px" &&
+    check(`popup (${os}): defaults shown like the app`, ui.speed === "速さ 3 px/秒" && ui.width === "縞の幅 1 px" &&
       ui.dist === "変化の大きさ 1×" && ui.autoPanelHidden && !ui.manualHidden && ui.rotHidden && ui.colorHidden && ui.dir === "1" && ui.rotdir === "1" && ui.color === "0", ui);
     check(`popup (${os}): no ellipses in the UI text`, !/[…]|\.\.\./.test(ui.text), null);
 
@@ -612,27 +614,25 @@ const setCfg = (page, cfg) => page.evaluate((cfg) => window.__lineHalfMask.setEn
       auto.s.auto === true && auto.s.width === 20 && auto.s.autoWidth === 8 && auto.s.dist === 5 && auto.manualHidden && !auto.autoHidden &&
       auto.width === "縞の幅 8 px" && auto.dist === "変化の大きさ 5×" && auto.hint === "速さ -100〜100 px/秒、回転 -25〜25 °/秒", auto);
 
-    // ボタン: 選択がなければ案内、あれば始めて「止める」に変わる
-    const noSelMsg = await page.evaluate(async () => {
+    // 十字: 選択がなければページ全体、あれば選択範囲。右でどちらも終わる。
+    const pad = await page.evaluate(async () => {
+      const out = {};
       window.__hasSelection = false;
-      document.getElementById("overlay-selection").click();
+      document.querySelector('.pad [data-coverage="top"]').click();
       await new Promise((r) => setTimeout(r, 100));
-      return document.getElementById("status").textContent;
-    });
-    const started = await page.evaluate(async () => {
+      out.page = document.getElementById("status").textContent;
       window.__hasSelection = true;
-      document.getElementById("overlay-selection").click();
+      document.querySelector('.pad [data-coverage="bottom"]').click();
       await new Promise((r) => setTimeout(r, 100));
-      return { label: document.getElementById("overlay-selection").textContent, status: document.getElementById("status").textContent };
+      out.selection = document.getElementById("status").textContent;
+      document.querySelector('.pad [data-coverage="off"]').click();
+      await new Promise((r) => setTimeout(r, 100));
+      out.off = document.getElementById("status").textContent;
+      out.msgs = window.__messages.filter((m) => m === "applyCoverage").length;
+      return out;
     });
-    const stopped = await page.evaluate(async () => {
-      document.getElementById("overlay-selection").click();
-      await new Promise((r) => setTimeout(r, 150));
-      return { label: document.getElementById("overlay-selection").textContent, msgs: window.__messages.filter((m) => /Selection/.test(m)) };
-    });
-    check(`popup (${os}): the button asks for a selection, starts, then stops`,
-      noSelMsg === "先にページの文字を選択してください" && started.label === "重ねるのを止める" && stopped.label === "選択範囲に重ねる" &&
-      stopped.msgs.join(",") === "overlaySelection,overlaySelection,endSelection", { noSelMsg, started, stopped });
+    check(`popup (${os}): the D-pad targets the page without a selection, the selection with one, and → ends both`,
+      pad.page === "いま: ページ全体（上半分）" && pad.selection === "いま: 選択範囲（下半分）" && pad.off === "いま: オフ" && pad.msgs === 3, pad);
     await page.close();
   }
 

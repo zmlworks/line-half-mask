@@ -1,11 +1,14 @@
 // ショートカット（パソコン用）を、いまのタブの content.js へ伝える。
 // ツールバーは popup.html で操作する（Android でも同じ）。
-// 選択範囲のコンテキストメニューは menus API があるときだけ（パソコン向け）。
+// コンテキストメニューは menus API があるときだけ（パソコン向け）。
+// 選択しているとき「選択範囲に行マスク」、何も選んでいないとき「範囲を指定して視覚トレーニング」。
 // Firefox の MV3 背景はイベントページなので、メニュー作成と onClicked は
 // 毎回の起動時（トップレベル）で登録する。
 const api = typeof browser !== "undefined" ? browser : chrome;
 const MENU_ID = "line-half-mask-selection";
 const MENU_TITLE = "選択範囲に行マスク";
+const TRAIN_ID = "line-half-mask-train";
+const TRAIN_TITLE = "範囲を指定して視覚トレーニング";
 
 function menusApi() {
   return (api && (api.menus || api.contextMenus)) || null;
@@ -33,10 +36,19 @@ async function injectContent(tabId, frameId) {
 }
 
 // メニューから: いま選んでいる塗りで選択範囲に重ね、範囲を選ぶ十字の窓を出す。
-async function sendOverlay(tabId, frameId, opts) {
-  if (!tabId) return { ok: false, reason: "no-tab" };
+function sendOverlay(tabId, frameId, opts) {
   const message = { type: "overlaySelection", picker: true };
   if (opts && opts.fill) message.fill = opts.fill;
+  return sendToContent(tabId, frameId, message);
+}
+
+// メニューから: ドラッグで長方形を指定して、そこに視覚増強を出す。
+function sendTrain(tabId, frameId) {
+  return sendToContent(tabId, frameId, { type: "trainRect" });
+}
+
+async function sendToContent(tabId, frameId, message) {
+  if (!tabId) return { ok: false, reason: "no-tab" };
   const sendOpts = frameId != null ? { frameId } : {};
   let res = await send(tabId, message, sendOpts);
   // 受信側がいるなら、選択が空で ok:false でも再注入しない（二重起動を避ける）。
@@ -72,6 +84,7 @@ api.runtime.onMessage.addListener((msg, sender) => {
   if (msg.type === "debugMenuClick") {
     const tabId = msg.tabId != null ? msg.tabId : (sender.tab && sender.tab.id);
     const frameId = msg.frameId != null ? msg.frameId : sender.frameId;
+    if (msg.action === "train") return sendTrain(tabId, frameId);
     return sendOverlay(tabId, frameId, { fill: msg.fill });
   }
 });
@@ -80,10 +93,15 @@ function ensureMenu() {
   const menus = menusApi();
   if (!menus || !menus.create) return;
   const add = () => {
-    try {
-      const created = menus.create({ id: MENU_ID, title: MENU_TITLE, contexts: ["selection"] });
-      if (created && typeof created.then === "function") created.catch(() => {});
-    } catch (_) {}
+    for (const item of [
+      { id: MENU_ID, title: MENU_TITLE, contexts: ["selection"] },
+      { id: TRAIN_ID, title: TRAIN_TITLE, contexts: ["page", "frame", "link", "image", "video", "audio"] },
+    ]) {
+      try {
+        const created = menus.create(item);
+        if (created && typeof created.then === "function") created.catch(() => {});
+      } catch (_) {}
+    }
   };
   try {
     if (!menus.removeAll) { add(); return; }
@@ -96,10 +114,11 @@ function ensureMenu() {
 }
 
 function onMenuClick(info, tab) {
-  if (!info || info.menuItemId !== MENU_ID) return;
+  if (!info) return;
   const tabId = (tab && tab.id) != null ? tab.id : info.tabId;
   const frameId = info.frameId;
-  return sendOverlay(tabId, frameId);
+  if (info.menuItemId === MENU_ID) return sendOverlay(tabId, frameId);
+  if (info.menuItemId === TRAIN_ID) return sendTrain(tabId, frameId);
 }
 
 function bindMenus() {
@@ -118,4 +137,4 @@ if (api.runtime && api.runtime.onStartup) {
 }
 
 // テストからメニュー経路と同じ sendOverlay を呼べるようにする。
-globalThis.__lineHalfMaskBg = { MENU_ID, MENU_TITLE, sendOverlay, onMenuClick };
+globalThis.__lineHalfMaskBg = { MENU_ID, MENU_TITLE, TRAIN_ID, TRAIN_TITLE, sendOverlay, sendTrain, onMenuClick };

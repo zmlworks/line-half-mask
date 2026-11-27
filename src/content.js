@@ -1,29 +1,22 @@
 // 行の半分マスク: 一つの重ね描き（canvas）で、塗りの種類（黒塗り／視覚増強）と範囲を別々に選ぶ。
+// 黒塗りは真っ黒の単色（アニメーションなし）。視覚増強（斜めの縞を流す）の計算は enhance.js。
 // 範囲 coverage: full 行全体 / top 上半分 / bottom 下半分 / off なし。
 // ページ全体のマスクは、行を上から通しで番号づけし、奇数行の下半分と偶数行の上半分（入れ替えで逆）。
 // 選択範囲は、選んだ範囲の各行すべてに同じ範囲（行全体・上半分・下半分）を重ねる。
-// 視覚増強（斜めの縞を流す）の計算は enhance.js。
+// もう一つ、何も選んでいないときにドラッグで長方形を指定して、そこに視覚増強を出す機能がある。
 (() => {
   if (globalThis.__lineHalfMask) return;
   const api = typeof browser !== "undefined" ? browser : typeof chrome !== "undefined" ? chrome : null;
   const ROOT_ID = "line-half-mask-root";
   const PICKER_ID = "line-half-mask-picker";
+  const CAPTURE_ID = "line-half-mask-capture";
   const ENH = globalThis.LineHalfMaskEnhance;
   const Z = "2147483647";
-  // 既定は 45度の縞（白8px＋黒8px）、速さ約 30px/s。白と黒の幅と速さはポップアップで変えられる。
-  // 流れは常に縞の法線方向。canvas を毎フレーム描き直す。OS の動きを減らす設定は無視する。
-  const WIDTH_MIN = 1;
-  const WIDTH_MAX = 16;
-  const WIDTH_DEFAULT = 8;
-  const SPEED_MIN = 0;
-  const SPEED_MAX = 60;
-  const SPEED_DEFAULT = 30;
-  const DEFAULT_STRIPE_ANGLE = -Math.PI / 4;
-  const DEFAULT_FLOW_SIGN = 1;
   const CAPTURE_MS = 60000;
   const RATIO_MIN = 50;
   const RATIO_MAX = 90;
   const RATIO_DEFAULT = 50;
+  const MIN_DRAG = 6;
   const TAP_MOVE = 40;
   const TAP_MS = 600;
   const TWO_TAP_MS = 500;
@@ -52,7 +45,10 @@
   let flowPausedAt = 0;
   let flowPaused = false;
   let lastMasks = [];
-  let sel = null; // 選択範囲の重ね: { ranges, coverage, boxes }
+  let sel = null; // 選択範囲（または指定した長方形）の重ね: { ranges, rect, coverage, boxes }
+  let paintCount = 0; // 描いた回数（確認用）
+  let pageFull = false; // ページ全体のマスクを、奇偶ではなく全行にする
+  let drag = null; // 長方形のドラッグ中: { layer, band, start }
   let picker = null;
   let listenersBound = false;
   let touchBound = false;
@@ -60,12 +56,6 @@
   let watch = [];
   let capturedRanges = [];
   let capturedAt = 0;
-  let stripeWhite = WIDTH_DEFAULT;
-  let stripeBlack = WIDTH_DEFAULT;
-  let stripeSpeed = SPEED_DEFAULT;
-  let randomAngle = false;
-  let stripeAngle = DEFAULT_STRIPE_ANGLE;
-  let flowSign = DEFAULT_FLOW_SIGN;
   let fill = "black"; // black 黒塗り / enhance 視覚増強
   let coverage = "full"; // 選択範囲の既定の範囲
   let fx = null; // 視覚増強の場と動き
@@ -80,84 +70,24 @@
     return n;
   }
 
-  function clampWidth(v) {
-    const n = Math.round(Number(v));
-    if (!Number.isFinite(n)) return WIDTH_DEFAULT;
-    if (n < WIDTH_MIN) return WIDTH_MIN;
-    if (n > WIDTH_MAX) return WIDTH_MAX;
-    return n;
-  }
-
-  function clampSpeed(v) {
-    const n = Math.round(Number(v));
-    if (!Number.isFinite(n)) return SPEED_DEFAULT;
-    if (n < SPEED_MIN) return SPEED_MIN;
-    if (n > SPEED_MAX) return SPEED_MAX;
-    return n;
-  }
-
-  function toBool(v) { return v === true || v === "true" || v === 1 || v === "1"; }
-
-  function stripePeriod() { return stripeWhite + stripeBlack; }
-
   function active() { return on || !!sel; }
 
-  function fillStyle() { return fill === "enhance" && ENH ? "enhance" : "black"; }
+  // 長方形の指定は、塗りの設定にかかわらず視覚増強。
+  function fillStyle() { return ENH && (fill === "enhance" || (sel && sel.rect)) ? "enhance" : "black"; }
 
   function normalizeCoverage(v) { return COVERAGES.indexOf(v) >= 0 ? v : "full"; }
-
-  function rollStripeStyle() {
-    if (randomAngle) {
-      stripeAngle = Math.random() * Math.PI;
-      flowSign = Math.random() < 0.5 ? -1 : 1;
-    } else {
-      stripeAngle = DEFAULT_STRIPE_ANGLE;
-      flowSign = DEFAULT_FLOW_SIGN;
-    }
-  }
 
   function rollFx() {
     fxSeed = 1 + Math.floor(Math.random() * 0x7fffffff);
     fx = null;
   }
 
-  function applyStripePrefs(prefs, reroll) {
-    if (!prefs) prefs = {};
-    let changed = false;
-    if (Object.prototype.hasOwnProperty.call(prefs, "stripeWhite")) {
-      const w = clampWidth(prefs.stripeWhite);
-      if (w !== stripeWhite) { stripeWhite = w; changed = true; }
-    }
-    if (Object.prototype.hasOwnProperty.call(prefs, "stripeBlack")) {
-      const w = clampWidth(prefs.stripeBlack);
-      if (w !== stripeBlack) { stripeBlack = w; changed = true; }
-    }
-    if (Object.prototype.hasOwnProperty.call(prefs, "stripeSpeed")) {
-      const s = clampSpeed(prefs.stripeSpeed);
-      if (s !== stripeSpeed) { stripeSpeed = s; changed = true; }
-    }
-    if (Object.prototype.hasOwnProperty.call(prefs, "randomAngle")) {
-      const v = toBool(prefs.randomAngle);
-      if (v !== randomAngle) { randomAngle = v; changed = true; reroll = true; }
-    }
-    if (reroll) rollStripeStyle();
-    if ((changed || reroll) && active()) update();
-    if (changed) reportState();
-  }
-
-  function setStripeStyle(opts) {
-    if (!opts) return;
-    if (opts.stripeAngle != null && Number.isFinite(Number(opts.stripeAngle))) {
-      stripeAngle = Number(opts.stripeAngle);
-    }
-    if (opts.flowSign != null) flowSign = Number(opts.flowSign) < 0 ? -1 : 1;
-    if (active()) update();
-  }
-
   function stateSnapshot() {
     return {
-      on, parity, ratio, selectionOn: !!sel, fill, coverage: sel ? sel.coverage : coverage,
-      stripeWhite, stripeBlack, stripeSpeed, randomAngle, flowSign
+      on, parity, ratio, selectionOn: !!sel, rect: !!(sel && sel.rect), pageFull, fill,
+      coverage: sel ? sel.coverage : coverage,
+      // いま見えている範囲。選択範囲があればそれ、なければページ全体。
+      shown: sel ? sel.coverage : on ? (pageFull ? "full" : parity ? "top" : "bottom") : "off"
     };
   }
 
@@ -219,7 +149,6 @@
 
   // 選択範囲の重ねでは上半分と下半分を入れ替える。ページ全体は奇偶を入れ替える。
   function swap() {
-    rollStripeStyle();
     if (sel) {
       if (sel.coverage === "top") sel.coverage = "bottom";
       else if (sel.coverage === "bottom") sel.coverage = "top";
@@ -228,8 +157,34 @@
       reportState();
       return;
     }
+    pageFull = false;
     parity = parity ? 0 : 1;
     if (on) update();
+    reportState();
+  }
+
+  // ポップアップの十字。選択範囲（60 秒以内に選んだものも含む）があればそれに、なければページ全体に。
+  // ページ全体では、左=全行、上=奇偶（1 行目の上半分から）、下=奇偶（1 行目の下半分から）、右=すべてオフ。
+  function applyCoverage(v) {
+    v = normalizeCoverage(v);
+    if (v === "off") {
+      endSelection();
+      stop();
+      return;
+    }
+    if (sel) {
+      setSelCoverage(v);
+      return;
+    }
+    if (rangesForMask().length) {
+      overlaySelection({ coverage: v });
+      return;
+    }
+    pageFull = v === "full";
+    if (v === "top") parity = 1;
+    else if (v === "bottom") parity = 0;
+    if (on) update();
+    else start();
     reportState();
   }
 
@@ -291,7 +246,6 @@
   function start() {
     if (on) return;
     on = true;
-    rollStripeStyle();
     bindSharedListeners();
     bindTouch();
     if (!sel) {
@@ -305,6 +259,7 @@
 
   function stop() {
     on = false;
+    pageFull = false;
     tap = null;
     lastTwoTapAt = 0;
     unbindTouch();
@@ -404,7 +359,9 @@
   function isOwn(node) {
     const el = node && node.nodeType === 1 ? node : node && node.parentElement;
     if (!el) return false;
-    return (root && (el === root || root.contains(el))) || (picker && (el === picker.host || picker.host.contains(el)));
+    return (root && (el === root || root.contains(el))) ||
+      (picker && (el === picker.host || picker.host.contains(el))) ||
+      (drag && (el === drag.layer || drag.layer.contains(el)));
   }
 
   function onMutations(mutations) {
@@ -502,58 +459,33 @@
     return false;
   }
 
-  function drawStripes(c, d) {
-    // 回転の中心は原点（ビューポート左上）なので、塗りの範囲は
-    // 各マスクの幅・高さではなく、画面全体を覆う大きさにする。
-    // 以前は pad = width+height だったため、斜めの塗りが途中で切れ、
-    // 下の行ほど短く見え、ページ下部はほとんど塗られなかった。
-    if (!lastMasks.length) return;
-    const o = overlayOffset(root);
-    c.save();
-    c.imageSmoothingEnabled = false;
-    c.beginPath();
-    for (let i = 0; i < lastMasks.length; i++) {
-      const m = lastMasks[i];
-      if (m.width <= 0 || m.height <= 0) continue;
-      c.rect((m.left - o.x) / o.s, (m.top - o.y) / o.s, m.width / o.s, m.height / o.s);
-    }
-    c.clip();
-    // 流れは常に縞の法線（周期軸）。その成分だけを周期で折り返すので継ぎ目が出ない。
-    const period = stripePeriod();
-    const ax = -Math.sin(stripeAngle);
-    const ay = Math.cos(stripeAngle);
-    const wrapped = ((d % period) + period) % period;
-    c.translate(wrapped * ax, wrapped * ay);
-    c.rotate(stripeAngle);
-    const pad = innerWidth + innerHeight + 32;
-    const x0 = -pad;
-    const y0 = -pad;
-    const w = pad * 2;
-    const h = pad * 2;
-    c.fillStyle = "#000";
-    c.fillRect(x0, y0, w, h);
-    c.fillStyle = "#fff";
-    const yStart = Math.floor(y0 / period) * period + stripeBlack;
-    for (let y = yStart; y < y0 + h; y += period) {
-      c.fillRect(x0, y, w, stripeWhite);
-    }
-    c.restore();
-  }
-
-
   function flowElapsed(now) {
     if (flowPaused) return Math.max(0, flowPausedAt - flowT0 - flowPausedMs);
     return Math.max(0, now - flowT0 - flowPausedMs);
   }
 
-  // 黒塗り: 範囲をクリップして、回転した白黒の縞を流す。
-  function paintBlack(c, now) {
-    const along = (flowElapsed(now) / 1000) * stripeSpeed;
-    drawStripes(c, along * flowSign);
+  // 範囲の四角を、デバイス画素に丸めて canvas の座標にする（黒塗りも視覚増強も同じ）。
+  function deviceRect(r, o, k) {
+    const x0 = Math.max(0, Math.round((r.left - o.x) * k));
+    const y0 = Math.max(0, Math.round((r.top - o.y) * k));
+    const x1 = Math.min(root.width, Math.round((r.left + r.width - o.x) * k));
+    const y1 = Math.min(root.height, Math.round((r.top + r.height - o.y) * k));
+    return { x0, y0, w: x1 - x0, h: y1 - y0 };
+  }
+
+  // 黒塗り: 真っ黒の単色。位置が変わったときだけ描き直す。
+  function paintBlack(c) {
+    const k = enhK();
+    const o = overlayOffset(root);
+    c.fillStyle = "#000";
+    for (const r of lastMasks) {
+      const d = deviceRect(r, o, k);
+      if (d.w > 0 && d.h > 0) c.fillRect(d.x0, d.y0, d.w, d.h);
+    }
   }
 
   // 視覚増強: 1 画素ずつ二色のどちらかを決めて ImageData で描く（縁をぼかさない）。
-  // 場は、ページ全体なら画面全体、選択範囲なら選んだ全行を包む一つの四角。
+  // 場は、ページ全体なら画面全体、選択範囲なら選んだ全行を包む一つの四角（指定した長方形ならその四角）。
   // 各行（の範囲）はその場を見る窓として塗る。
   function enhK() {
     return (window.devicePixelRatio || 1) / clientScale(root);
@@ -589,18 +521,14 @@
   }
 
   function paintEnhance(c, now) {
-    const W = root.width, H = root.height;
     const k = enhK();
     const o = overlayOffset(root);
     const pose = fx.motion.pose(flowElapsed(now) / 1000);
     const c0 = pose.hue == null ? ENH.BLACK : ENH.colorAtHue(pose.hue);
     const c1 = pose.hue == null ? ENH.WHITE : ENH.colorAtHue(pose.hue + 180);
     for (const r of lastMasks) {
-      const x0 = Math.max(0, Math.round((r.left - o.x) * k));
-      const y0 = Math.max(0, Math.round((r.top - o.y) * k));
-      const x1 = Math.min(W, Math.round((r.left + r.width - o.x) * k));
-      const y1 = Math.min(H, Math.round((r.top + r.height - o.y) * k));
-      const w = x1 - x0, h = y1 - y0;
+      const d = deviceRect(r, o, k);
+      const x0 = d.x0, y0 = d.y0, w = d.w, h = d.h;
       if (w <= 0 || h <= 0) continue;
       // 拡張の content script からは、ページ側の ImageData を直接 new せず、canvas から作る。
       const key = w + "x" + h;
@@ -630,26 +558,19 @@
 
   function paint(now) {
     if (!root) return;
+    paintCount += 1;
     sizeCanvas(root);
     const c = root.getContext("2d", { alpha: true });
     c.setTransform(1, 0, 0, 1, 0, 0);
     c.clearRect(0, 0, root.width, root.height);
     if (!lastMasks.length) return;
     if (fx) paintEnhance(c, now);
-    else {
-      const dpr = window.devicePixelRatio || 1;
-      c.setTransform(dpr, 0, 0, dpr, 0, 0);
-      paintBlack(c, now);
-    }
+    else paintBlack(c);
   }
 
-  // 動いている塗りだけ毎フレーム描き直す。止まっている間は位置の確認だけ。
+  // 動いている視覚増強だけ描き直す。黒塗りは位置の確認だけで、描き直しは update のときだけ。
   function frame(now) {
-    if (fx) {
-      if (enhMoved(fx.drawn, fx.motion.pose(flowElapsed(now) / 1000))) paint(now);
-    } else if (stripeSpeed > 0) {
-      paint(now);
-    }
+    if (fx && enhMoved(fx.drawn, fx.motion.pose(flowElapsed(now) / 1000))) paint(now);
   }
 
   function tick(now) {
@@ -714,7 +635,7 @@
     if (!active()) return;
     updating = true;
     try {
-      const lines = sel ? collectSelectionLines(sel.ranges) : collectLines();
+      const lines = sel ? (sel.rect ? [rectLine()] : collectSelectionLines(sel.ranges)) : collectLines();
       if (sel) sel.boxes = lines.map(clippedBox).filter(Boolean);
       // オフ: 重ねを外し、範囲を選ぶ窓だけ残す。ページ全体のマスクも、選択が終わるまで出さない。
       if (sel && sel.coverage === "off") {
@@ -842,6 +763,7 @@
   // ページ全体は上から通しの奇偶（奇数行は下、偶数行は上。入れ替えで逆）。
   function maskPick() {
     if (sel) return () => sel.coverage;
+    if (pageFull) return () => "full";
     return (i) => ((i % 2 === 0) === (parity === 0) ? "bottom" : "top");
   }
 
@@ -906,7 +828,7 @@
   }
 
   function collect() {
-    return masksFromLines(sel ? collectSelectionLines() : collectLines(), maskPick());
+    return masksFromLines(sel ? (sel.rect ? [rectLine()] : collectSelectionLines()) : collectLines(), maskPick());
   }
 
   function hitMask(x, y) {
@@ -1042,11 +964,11 @@
     if (opts.coverage) coverage = normalizeCoverage(opts.coverage);
     // 窓なしでオフから始めると操作する手段がないので、行全体にする。
     if (!opts.picker && coverage === "off") coverage = "full";
+    endDrag();
     closePicker();
     sel = { ranges, coverage, boxes: [] };
     // 青の選択ハイライトが残らないよう、範囲を確保したあとで外す。
     clearPageSelection();
-    rollStripeStyle();
     rollFx();
     bindSharedListeners();
     bindClickExit();
@@ -1071,6 +993,98 @@
     } else {
       teardownOverlay();
     }
+    reportState();
+  }
+
+  // ---- 範囲を指定して視覚トレーニング（コンテキストメニュー、何も選んでいないとき） ----
+  // 透明な捕捉層でドラッグを受け、離したら層を外して、その長方形に視覚増強を重ねる。
+  // 四角はページ（文書）の座標で持つので、ページのスクロールに付いてくる。
+  // 終わらせるのは、四角の外のクリックか Esc（選択範囲の重ねと同じ）。
+  function rectLine() {
+    const r = sel.rect;
+    const left = r.x - window.scrollX, top = r.y - window.scrollY;
+    return { left, top, right: left + r.w, bottom: top + r.h, width: r.w, height: r.h, el: document.documentElement };
+  }
+
+  function dragBox(e) {
+    const x0 = Math.min(drag.start.x, e.clientX), y0 = Math.min(drag.start.y, e.clientY);
+    return { left: x0, top: y0, width: Math.abs(e.clientX - drag.start.x), height: Math.abs(e.clientY - drag.start.y) };
+  }
+
+  function onDragMove(e) {
+    if (!drag || !drag.start) return;
+    const b = dragBox(e);
+    const o = drag.layer.getBoundingClientRect();
+    const st = drag.band.style;
+    st.display = "block";
+    st.left = b.left - o.left + "px";
+    st.top = b.top - o.top + "px";
+    st.width = b.width + "px";
+    st.height = b.height + "px";
+  }
+
+  function onDragUp(e) {
+    if (!drag || !drag.start) return;
+    const b = dragBox(e);
+    endDrag();
+    if (b.width >= MIN_DRAG && b.height >= MIN_DRAG) startRect(b);
+  }
+
+  function onDragKey(e) {
+    if (e.key !== "Escape") return;
+    e.preventDefault();
+    e.stopPropagation();
+    endDrag();
+  }
+
+  function endDrag() {
+    if (!drag) return;
+    const d = drag;
+    drag = null;
+    d.layer.remove();
+    window.removeEventListener("mousemove", onDragMove, true);
+    window.removeEventListener("mouseup", onDragUp, true);
+    window.removeEventListener("keydown", onDragKey, true);
+  }
+
+  function trainRect() {
+    endSelection();
+    endDrag();
+    const layer = document.createElement("div");
+    layer.id = CAPTURE_ID;
+    layer.style.cssText =
+      "position:fixed;left:0;top:0;right:0;bottom:0;margin:0;padding:0;border:none;background:transparent;" +
+      "cursor:crosshair;touch-action:none;user-select:none;z-index:" + Z + ";";
+    const band = document.createElement("div");
+    band.style.cssText =
+      "position:absolute;display:none;box-sizing:border-box;border:1px dashed #111;outline:1px dashed #fff;pointer-events:none;";
+    layer.appendChild(band);
+    drag = { layer, band, start: null };
+    layer.addEventListener("mousedown", (e) => {
+      if (e.button !== 0 || !drag) return;
+      e.preventDefault();
+      drag.start = { x: e.clientX, y: e.clientY };
+      window.addEventListener("mousemove", onDragMove, true);
+      window.addEventListener("mouseup", onDragUp, true);
+    });
+    window.addEventListener("keydown", onDragKey, true);
+    (document.documentElement || document.body).appendChild(layer);
+  }
+
+  // b はビューポートの座標。ページの座標にして持つ。
+  function startRect(b) {
+    endDrag();
+    closePicker();
+    sel = {
+      rect: { x: b.left + window.scrollX, y: b.top + window.scrollY, w: b.width, h: b.height },
+      ranges: [], coverage: "full", boxes: []
+    };
+    rollFx();
+    bindSharedListeners();
+    bindClickExit();
+    ensureRoot();
+    update();
+    startFlow();
     reportState();
   }
 
@@ -1169,18 +1183,15 @@
       else if (msg.type === "overlaySelection") {
         const ok = overlaySelection({ fill: msg.fill, coverage: msg.coverage, picker: !!msg.picker });
         return Promise.resolve(Object.assign({ ok }, stateSnapshot()));
-      } else if (msg.type === "setCoverage") {
-        setCoverage(msg.coverage);
-        return Promise.resolve(stateSnapshot());
-      } else if (msg.type === "endSelection") {
-        endSelection();
+      } else if (msg.type === "trainRect") {
+        trainRect();
+        return Promise.resolve(Object.assign({ ok: true }, stateSnapshot()));
+      } else if (msg.type === "applyCoverage") {
+        applyCoverage(msg.coverage);
         return Promise.resolve(stateSnapshot());
       } else if (msg.type === "setRatio") {
         setRatio(msg.ratio);
         return Promise.resolve(stateSnapshot());
-      } else if (msg.type === "setStripe") {
-        applyStripePrefs(msg, false);
-        return Promise.resolve(Object.assign({ stripeAngle }, stateSnapshot()));
       } else if (msg.type === "state") {
         return Promise.resolve(stateSnapshot());
       }
@@ -1195,7 +1206,7 @@
     stop,
     update,
     getState() {
-      return Object.assign({ flowPaused, stripeAngle, pickerOpen: !!picker }, stateSnapshot());
+      return Object.assign({ flowPaused, pickerOpen: !!picker, dragging: !!drag, paintCount }, stateSnapshot());
     },
     collect,
     collectLines,
@@ -1206,13 +1217,11 @@
     setCoverage,
     setSelCoverage,
     clampRatio,
-    clampWidth,
-    clampSpeed,
-    applyStripePrefs,
-    rollStripeStyle,
-    setStripeStyle,
     overlaySelection,
     endSelection,
+    applyCoverage,
+    trainRect,
+    startRect,
     setEnhance,
     showAt,
     fxInfo() {
@@ -1224,12 +1233,6 @@
       return { left: r.left, top: r.top, width: r.width, height: r.height, host: picker.host };
     },
     captureSelection,
-    get STRIPE_WHITE() { return stripeWhite; },
-    get STRIPE_BLACK() { return stripeBlack; },
-    get STRIPE_PERIOD() { return stripePeriod(); },
-    get STRIPE_SPEED() { return stripeSpeed; },
-    WIDTH_DEFAULT,
-    SPEED_DEFAULT,
   };
 
   document.addEventListener("contextmenu", captureSelection, true);
@@ -1240,24 +1243,15 @@
     if (res.fill !== undefined) setFill(res.fill);
     if (res.coverage !== undefined) setCoverage(res.coverage);
     if (res.enhance !== undefined) setEnhance(res.enhance);
-    const prefs = {};
-    for (const k of ["stripeWhite", "stripeBlack", "stripeSpeed", "randomAngle"]) {
-      if (res[k] !== undefined) prefs[k] = res[k];
-    }
-    applyStripePrefs(prefs, false);
   }
 
   function bindStorage() {
     if (!api || !api.storage || !api.storage.local) return;
-    const keys = ["ratio", "fill", "coverage", "stripeWhite", "stripeBlack", "stripeSpeed", "randomAngle", "enhance"];
+    const keys = ["ratio", "fill", "coverage", "enhance"];
     try {
       api.storage.local.get(keys).then((res) => {
         if (!res) return;
         applyPrefs(res);
-        if (!randomAngle) {
-          stripeAngle = DEFAULT_STRIPE_ANGLE;
-          flowSign = DEFAULT_FLOW_SIGN;
-        }
       }).catch(() => {});
     } catch (_) {}
     if (api.storage.onChanged) {

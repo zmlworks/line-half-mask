@@ -2,8 +2,6 @@ const api = typeof browser !== "undefined" ? browser : chrome;
 const SH = globalThis.LineHalfMaskShortcuts;
 const EN = globalThis.LineHalfMaskEnhance;
 
-const toggleBtn = document.getElementById("toggle");
-const swapBtn = document.getElementById("swap");
 const status = document.getElementById("status");
 const shortcutsBox = document.getElementById("shortcuts");
 const shortcutMsg = document.getElementById("shortcut-msg");
@@ -35,7 +33,6 @@ function clampRatio(v) {
   return n;
 }
 
-const overlayBtn = document.getElementById("overlay-selection");
 const KEY_COVERAGE = { ArrowLeft: "full", ArrowRight: "off", ArrowUp: "top", ArrowDown: "bottom" };
 
 function choice(name) {
@@ -51,7 +48,6 @@ function setChoice(name, value) {
 
 function showFill(fill) {
   setChoice("fill", fill);
-  document.getElementById("black-panel").hidden = fill === "enhance";
   document.getElementById("enhance-panel").hidden = fill !== "enhance";
 }
 
@@ -63,16 +59,16 @@ function showCoverage(v) {
   }
 }
 
+const COVERAGE_LABELS = { full: "オン", off: "オフ", top: "上半分", bottom: "下半分" };
+
+// 十字の点灯と状態の一行。対象は、選択範囲（長方形の指定も）があればそれ、なければページ全体。
 function showState(state) {
-  overlayBtn.textContent = state.selectionOn ? "重ねるのを止める" : "選択範囲に重ねる";
-  overlayBtn.classList.toggle("on", !!state.selectionOn);
-  showCoverage(state.selectionOn ? (state.coverage || "full") : "off");
-  toggleBtn.textContent = state.on ? "オフにする" : "オンにする";
-  toggleBtn.classList.toggle("on", !!state.on);
+  const shown = state.shown || "off";
+  showCoverage(shown);
   status.className = "note";
-  if (!state.on) status.textContent = "いま: オフ";
-  else if (state.parity) status.textContent = "いま: オン（入れ替え）";
-  else status.textContent = "いま: オン（通常）";
+  if (state.selectionOn) status.textContent = "いま: " + (state.rect ? "指定した範囲" : "選択範囲") + "（" + COVERAGE_LABELS[shown] + "）";
+  else if (state.on) status.textContent = "いま: ページ全体（" + COVERAGE_LABELS[shown] + "）";
+  else status.textContent = "いま: オフ";
 }
 
 function showError() {
@@ -83,24 +79,6 @@ function showError() {
 async function refresh() {
   showState(await send("state"));
 }
-
-toggleBtn.addEventListener("click", async () => {
-  try {
-    await send("toggle");
-    await refresh();
-  } catch (_) {
-    showError();
-  }
-});
-
-swapBtn.addEventListener("click", async () => {
-  try {
-    await send("swap");
-    await refresh();
-  } catch (_) {
-    showError();
-  }
-});
 
 // 塗りは storage に保存する。ページ側が変更を見て、出ている重ねにもすぐ反映する。
 async function saveFill() {
@@ -121,38 +99,15 @@ async function loadChoices() {
     if (api.storage && api.storage.local) res = await api.storage.local.get(["fill"]);
   } catch (_) {}
   showFill(res && res.fill === "enhance" ? "enhance" : "black");
-  showCoverage("off");
 }
 
-// 十字と同じ対応。オフは重ねを終える。ほかは、出ていなければ選択範囲に始め、出ていれば範囲だけ変える。
+// 十字: 効く先はページ側が決める（選択範囲があればそれ、なければページ全体）。
 async function applyCoverage(cov) {
-  showCoverage(cov);
-  if (cov !== "off") {
-    try {
-      if (api.storage && api.storage.local) await api.storage.local.set({ coverage: cov });
-    } catch (_) {}
-  }
   try {
-    const state = await send("state");
-    if (cov === "off") {
-      if (state && state.selectionOn) await send("endSelection");
-      await refresh();
-      return;
-    }
-    if (state && state.selectionOn) {
-      const res = await send("setCoverage", { coverage: cov });
-      showState(res || { selectionOn: true, coverage: cov, on: state.on, parity: state.parity });
-      return;
-    }
-    const res = await send("overlaySelection", { coverage: cov });
-    if (res && res.ok) {
-      showState(res);
-      status.textContent = "選択範囲に重ねました。ほかをタップすると終わります";
-      return;
-    }
-    status.className = "err";
-    status.textContent = "先にページの文字を選択してください";
-    showCoverage("off");
+    if (cov !== "off" && api.storage && api.storage.local) await api.storage.local.set({ coverage: cov });
+  } catch (_) {}
+  try {
+    showState(await send("applyCoverage", { coverage: cov }));
   } catch (_) {
     showError();
   }
@@ -177,27 +132,6 @@ document.addEventListener("keydown", (e) => {
   if (!cov) return;
   e.preventDefault();
   applyCoverage(cov);
-});
-
-overlayBtn.addEventListener("click", async () => {
-  try {
-    const state = await send("state");
-    if (state && state.selectionOn) {
-      await send("endSelection");
-      await refresh();
-      return;
-    }
-    const res = await send("overlaySelection");
-    if (res && res.ok) {
-      showState(res);
-      status.textContent = "選択範囲に重ねました。ほかをタップすると終わります";
-      return;
-    }
-    status.className = "err";
-    status.textContent = "先にページの文字を選択してください";
-  } catch (_) {
-    showError();
-  }
 });
 
 function setShortcutMsg(text, isError) {
@@ -340,84 +274,6 @@ ratioInput.addEventListener("keydown", (e) => {
   }
 });
 
-const whiteInput = document.getElementById("stripe-white");
-const blackInput = document.getElementById("stripe-black");
-const speedInput = document.getElementById("stripe-speed");
-const angleInput = document.getElementById("random-angle");
-
-function clampWidth(v) {
-  const n = Math.round(Number(v));
-  if (!Number.isFinite(n)) return 8;
-  if (n < 1) return 1;
-  if (n > 16) return 16;
-  return n;
-}
-
-function clampSpeed(v) {
-  const n = Math.round(Number(v));
-  if (!Number.isFinite(n)) return 30;
-  if (n < 0) return 0;
-  if (n > 60) return 60;
-  return n;
-}
-
-async function loadStripe() {
-  let white = 8, black = 8, speed = 30, randomAngle = false;
-  try {
-    if (api.storage && api.storage.local) {
-      const res = await api.storage.local.get(["stripeWhite", "stripeBlack", "stripeSpeed", "randomAngle"]);
-      if (res) {
-        if (res.stripeWhite != null) white = clampWidth(res.stripeWhite);
-        if (res.stripeBlack != null) black = clampWidth(res.stripeBlack);
-        if (res.stripeSpeed != null) speed = clampSpeed(res.stripeSpeed);
-        randomAngle = !!res.randomAngle;
-      }
-    }
-  } catch (_) {}
-  whiteInput.value = String(white);
-  blackInput.value = String(black);
-  speedInput.value = String(speed);
-  angleInput.checked = randomAngle;
-}
-
-async function commitStripe() {
-  const prefs = {
-    stripeWhite: clampWidth(whiteInput.value),
-    stripeBlack: clampWidth(blackInput.value),
-    stripeSpeed: clampSpeed(speedInput.value),
-    randomAngle: !!angleInput.checked,
-  };
-  whiteInput.value = String(prefs.stripeWhite);
-  blackInput.value = String(prefs.stripeBlack);
-  speedInput.value = String(prefs.stripeSpeed);
-  try {
-    if (api.storage && api.storage.local) await api.storage.local.set(prefs);
-  } catch (_) {}
-  try {
-    await send("setStripe", prefs);
-  } catch (_) {}
-}
-
-function bindStripeField(el, evs) {
-  for (const ev of evs) el.addEventListener(ev, commitStripe);
-}
-
-bindStripeField(whiteInput, ["change", "blur"]);
-bindStripeField(blackInput, ["change", "blur"]);
-bindStripeField(speedInput, ["change", "blur"]);
-angleInput.addEventListener("change", commitStripe);
-for (const el of [whiteInput, blackInput, speedInput]) {
-  el.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      commitStripe();
-      el.blur();
-    }
-  });
-}
-
-// ---- 視覚増強の設定 ----
-// 値は storage.local の enhance にまとめて保存し、ページ側が変更を見て動かし直す。
 const enh = {
   auto: document.getElementById("enh-auto"),
   autoPanel: document.getElementById("enh-auto-panel"),
@@ -527,5 +383,4 @@ refresh().catch(showError);
 setupShortcuts();
 loadChoices();
 loadRatio();
-loadStripe();
 loadEnhance();
